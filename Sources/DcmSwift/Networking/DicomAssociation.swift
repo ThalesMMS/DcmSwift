@@ -328,6 +328,43 @@ public class DicomAssociation: ChannelInboundHandler {
                         
                         _ = try? handle(event: .DT2(message))
                     }
+                case is CGetSCU:
+                    // C-GET can receive multiple message types
+                    if let message = PDUDecoder.receiveDIMSEMessage(
+                        data: pduData,
+                        pduType: .dataTF,
+                        association: self
+                    ) as? CGetRSP {
+                        log(message: message, write: false)
+                        _ = try? handle(event: .DT2(message))
+                    }
+                    // C-GET also receives C-STORE-RQ for incoming data
+                    else if let message = PDUDecoder.receiveDIMSEMessage(
+                        data: pduData,
+                        pduType: .dataTF,
+                        association: self
+                    ) as? CStoreRQ {
+                        log(message: message, write: false)
+                        _ = try? handle(event: .DT2(message))
+                    }
+                    // Handle fragmented DATA-TF messages
+                    else if let message = PDUDecoder.receiveDIMSEMessage(
+                        data: pduData,
+                        pduType: .dataTF,
+                        association: self
+                    ) as? DataTF {
+                        log(message: message, write: false)
+                        _ = try? handle(event: .DT2(message))
+                    }
+                case is CMoveSCU:
+                    if let message = PDUDecoder.receiveDIMSEMessage(
+                        data: pduData,
+                        pduType: .dataTF,
+                        association: self
+                    ) as? CMoveRSP {
+                        log(message: message, write: false)
+                        _ = try? handle(event: .DT2(message))
+                    }
                 default:
                     break
                 }
@@ -473,6 +510,11 @@ public class DicomAssociation: ChannelInboundHandler {
     
     
     
+    
+    // MARK: - Public Accessors
+    public func getChannel() -> Channel? {
+        return self.channel
+    }
     
     // MARK: - Presentation Context
     public func addPresentationContext(abstractSyntax: String, result:UInt8? = nil) {

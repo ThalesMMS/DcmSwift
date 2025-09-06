@@ -103,6 +103,18 @@ extension PDUDecoder {
             else if commandField == .C_STORE_RQ {
                 message = CStoreRQ(data: data, pduType: pduType, commandField:commandField, association: association)
             }
+            else if commandField == .C_MOVE_RSP {
+                message = CMoveRSP(data: data, pduType: pduType, commandField:commandField, association: association)
+            }
+            else if commandField == .C_MOVE_RQ {
+                message = CMoveRQ(data: data, pduType: pduType, commandField:commandField, association: association)
+            }
+            else if commandField == .C_GET_RSP {
+                message = CGetRSP(data: data, pduType: pduType, commandField:commandField, association: association)
+            }
+            else if commandField == .C_GET_RQ {
+                message = CGetRQ(data: data, pduType: pduType, commandField:commandField, association: association)
+            }
         }
         
         return message

@@ -32,8 +32,16 @@ public class DicomServer: CEchoSCPDelegate, CFindSCPDelegate, CStoreSCPDelegate 
     var channel: Channel!
     var group:MultiThreadedEventLoopGroup!
     var bootstrap:ServerBootstrap!
+    
+    /// Optional custom delegate for C-STORE operations
+    public var storeSCPDelegate: ((DataSet) -> DIMSEStatus.Status)?
 
     
+    
+    public convenience init(port: Int, localAET: String) {
+        let defaultConfig = ServerConfig(enableCEchoSCP: true, enableCFindSCP: false, enableCStoreSCP: true)
+        self.init(port: port, localAET: localAET, config: defaultConfig)
+    }
     
     public init(port: Int, localAET:String, config:ServerConfig) {
         self.calledAE   = DicomEntity(title: localAET, hostname: "localhost", port: port)
@@ -79,21 +87,24 @@ public class DicomServer: CEchoSCPDelegate, CFindSCPDelegate, CStoreSCPDelegate 
     /**
      Starts the server
      */
-    public func start() {
-        do {
-            defer {
-                try? group.syncShutdownGracefully()
-            }
-            
-            channel = try bootstrap.bind(host: "0.0.0.0", port: port).wait()
-            
-            Logger.info("Server listening on port \(port)...")
-            
-            try channel.closeFuture.wait()
-            
-        } catch let e {
-            Logger.error(e.localizedDescription)
+    public func start() throws {
+        channel = try bootstrap.bind(host: "0.0.0.0", port: port).wait()
+        
+        Logger.info("Server listening on port \(port)...")
+        
+        // Don't wait here, let the server run in background
+        // try channel.closeFuture.wait()
+    }
+    
+    /**
+     Stops the server
+     */
+    public func stop() {
+        if let channel = channel {
+            channel.close(mode: .all, promise: nil)
         }
+        
+        try? group.syncShutdownGracefully()
     }
     
     
@@ -115,34 +126,31 @@ public class DicomServer: CEchoSCPDelegate, CFindSCPDelegate, CStoreSCPDelegate 
     
     
     // MARK: - CStoreSCPDelegate
-    /// - Returns: `false`
+    /// - Returns: `true` if storage succeeded, `false` otherwise
     public func store(fileMetaInfo:DataSet, dataset: DataSet, tempFile:String) -> Bool {
-//        if message.receivedData.count > 0 {
-//            let dis = DicomInputStream(data: message.receivedData)
-//
-//            dis.vrMethod = .Explicit
-//
-//            if let d = try? dis.readDataset(enforceVR: false) {
-//                if let sopClassUID      = d.string(forTag: "SOPClassUID"),
-//                   let sopInstanceUID   = d.string(forTag: "SOPInstanceUID") {
-//
-//                    _ = d.set(value: 0x0000, forTagName: "FileMetaInformationVersion")
-//                    _ = d.set(value: sopClassUID, forTagName: "MediaStorageSOPClassUID")
-//                    _ = d.set(value: sopInstanceUID, forTagName: "MediaStorageSOPInstanceUID")
-//                    _ = d.set(value: TransferSyntax.explicitVRLittleEndian, forTagName: "TransferSyntaxUID")
-//                    _ = d.set(value: orgRoot, forTagName: "ImplementationClassUID")
-//                    _ = d.set(value: "DcmSwift", forTagName: "ImplementationVersionName")
-//
-//                    if let t = message.association.callingAE?.title {
-//                        _ = d.set(value: t, forTagName: "SourceApplicationEntityTitle")
-//                    }
-//
-//                    d.hasPreamble = true
-//
-//                    try? d.toData().write(to: URL(fileURLWithPath: "/Users/nark/test_sore.dcm"))
-//                }
-//            }
-//        }
+        // Use custom delegate if available
+        if let delegate = storeSCPDelegate {
+            let status = delegate(dataset)
+            return status == .Success
+        }
+        
+        // Default implementation: save to temp file
+        if let sopInstanceUID = dataset.string(forTag: "SOPInstanceUID") {
+            let outputPath = "/tmp/\(sopInstanceUID).dcm"
+            
+            // Create a complete DICOM file
+            let dicomFile = DicomFile()
+            dicomFile.dataset = dataset
+            
+            // Write to file
+            if dicomFile.write(atPath: outputPath) {
+                Logger.info("Stored file to: \(outputPath)")
+                return true
+            } else {
+                Logger.error("Failed to store file to: \(outputPath)")
+            }
+        }
+        
         return false
     }
 }

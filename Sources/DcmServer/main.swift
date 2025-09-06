@@ -23,7 +23,10 @@ struct DcmServer: ParsableCommand {
 
         if #available(OSX 10.12, *) {
             //Thread.detachNewThread {
-                server.start()
+                try server.start()
+                
+                // Keep the server running
+                RunLoop.main.run()
             //}
         } else {
             Logger.error("MacOS 10.12 or newer is required")

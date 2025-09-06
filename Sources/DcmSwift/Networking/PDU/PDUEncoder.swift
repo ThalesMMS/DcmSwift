@@ -97,6 +97,18 @@ private extension PDUEncoder {
             else if commandField == .C_STORE_RSP {
                 encodable = CStoreRSP(pduType: pduType, commandField:commandField, association: association)
             }
+            else if commandField == .C_MOVE_RQ {
+                encodable = CMoveRQ(pduType: pduType, commandField:commandField, association: association)
+            }
+            else if commandField == .C_MOVE_RSP {
+                encodable = CMoveRSP(pduType: pduType, commandField:commandField, association: association)
+            }
+            else if commandField == .C_GET_RQ {
+                encodable = CGetRQ(pduType: pduType, commandField:commandField, association: association)
+            }
+            else if commandField == .C_GET_RSP {
+                encodable = CGetRSP(pduType: pduType, commandField:commandField, association: association)
+            }
             else {
                  encodable = DataTF(pduType: pduType, commandField:commandField, association: association)
             }

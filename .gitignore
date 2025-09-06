@@ -6,3 +6,4 @@ xcuserdata/
 docs/
 Tests/DcmSwiftTests/Resources/
 __MACOSX/
+/build
