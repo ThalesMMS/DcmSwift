@@ -1,0 +1,166 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:DcmSwift}",
+            "name": "Debug DcmAnonymize",
+            "program": "${workspaceFolder:DcmSwift}/.build/debug/DcmAnonymize",
+            "preLaunchTask": "swift: Build Debug DcmAnonymize"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:DcmSwift}",
+            "name": "Release DcmAnonymize",
+            "program": "${workspaceFolder:DcmSwift}/.build/release/DcmAnonymize",
+            "preLaunchTask": "swift: Build Release DcmAnonymize"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:DcmSwift}",
+            "name": "Debug DcmPrint",
+            "program": "${workspaceFolder:DcmSwift}/.build/debug/DcmPrint",
+            "preLaunchTask": "swift: Build Debug DcmPrint"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:DcmSwift}",
+            "name": "Release DcmPrint",
+            "program": "${workspaceFolder:DcmSwift}/.build/release/DcmPrint",
+            "preLaunchTask": "swift: Build Release DcmPrint"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:DcmSwift}",
+            "name": "Debug DcmServer",
+            "program": "${workspaceFolder:DcmSwift}/.build/debug/DcmServer",
+            "preLaunchTask": "swift: Build Debug DcmServer"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:DcmSwift}",
+            "name": "Release DcmServer",
+            "program": "${workspaceFolder:DcmSwift}/.build/release/DcmServer",
+            "preLaunchTask": "swift: Build Release DcmServer"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:DcmSwift}",
+            "name": "Debug DcmEcho",
+            "program": "${workspaceFolder:DcmSwift}/.build/debug/DcmEcho",
+            "preLaunchTask": "swift: Build Debug DcmEcho"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:DcmSwift}",
+            "name": "Release DcmEcho",
+            "program": "${workspaceFolder:DcmSwift}/.build/release/DcmEcho",
+            "preLaunchTask": "swift: Build Release DcmEcho"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:DcmSwift}",
+            "name": "Debug DcmStore",
+            "program": "${workspaceFolder:DcmSwift}/.build/debug/DcmStore",
+            "preLaunchTask": "swift: Build Debug DcmStore"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:DcmSwift}",
+            "name": "Release DcmStore",
+            "program": "${workspaceFolder:DcmSwift}/.build/release/DcmStore",
+            "preLaunchTask": "swift: Build Release DcmStore"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:DcmSwift}",
+            "name": "Debug DcmSR",
+            "program": "${workspaceFolder:DcmSwift}/.build/debug/DcmSR",
+            "preLaunchTask": "swift: Build Debug DcmSR"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:DcmSwift}",
+            "name": "Release DcmSR",
+            "program": "${workspaceFolder:DcmSwift}/.build/release/DcmSR",
+            "preLaunchTask": "swift: Build Release DcmSR"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:DcmSwift}",
+            "name": "Debug DcmFind",
+            "program": "${workspaceFolder:DcmSwift}/.build/debug/DcmFind",
+            "preLaunchTask": "swift: Build Debug DcmFind"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:DcmSwift}",
+            "name": "Release DcmFind",
+            "program": "${workspaceFolder:DcmSwift}/.build/release/DcmFind",
+            "preLaunchTask": "swift: Build Release DcmFind"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:DcmSwift}",
+            "name": "Debug DcmGet",
+            "program": "${workspaceFolder:DcmSwift}/.build/debug/DcmGet",
+            "preLaunchTask": "swift: Build Debug DcmGet"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:DcmSwift}",
+            "name": "Release DcmGet",
+            "program": "${workspaceFolder:DcmSwift}/.build/release/DcmGet",
+            "preLaunchTask": "swift: Build Release DcmGet"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:DcmSwift}",
+            "name": "Debug DcmMove",
+            "program": "${workspaceFolder:DcmSwift}/.build/debug/DcmMove",
+            "preLaunchTask": "swift: Build Debug DcmMove"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:DcmSwift}",
+            "name": "Release DcmMove",
+            "program": "${workspaceFolder:DcmSwift}/.build/release/DcmMove",
+            "preLaunchTask": "swift: Build Release DcmMove"
+        }
+    ]
+}
