@@ -65,6 +65,10 @@ The library includes helpers for DICOM-specific data types like dates, times, an
 
 DcmSwift is used in the **DicomiX** macOS application, which demonstrates the library's capabilities.
 
+## ROI Measurement Service
+
+`ROIMeasurementService` offers tools for ROI measurements on DICOM images.  Through `ROIMeasurementServiceProtocol`, UI layers can start a measurement, add points and complete it to obtain values in millimetres.  The service currently supports **distance** and **ellipse** modes and includes helpers for converting view coordinates to image pixel coordinates.
+
 ## Use DcmSwift in your project
 
 DcmSwift uses Swift Package Manager. Add it as a dependency in your `Package.swift`:
