@@ -1,18 +1,15 @@
-#if canImport(UIKit)
+﻿#if canImport(UIKit)
 import UIKit
 import Foundation
 
 /// Result of DICOM decoding and display operations.
 public enum DicomProcessingResult {
-    /// Image was decoded and displayed successfully.
     case success
-    /// An error occurred during processing.
     case failure(DicomToolError)
 }
 
 /// Error types produced by ``DicomTool``.
 public enum DicomToolError: Error, LocalizedError {
-    /// The DICOM image could not be decoded.
     case decodingFailed
 
     public var errorDescription: String? {
@@ -23,68 +20,93 @@ public enum DicomToolError: Error, LocalizedError {
     }
 }
 
-/// Swift DICOM utility based on ``DicomServiceProtocol``.
-///
-/// The class offers asynchronous helpers for validating and displaying
-/// DICOM images while preserving the original synchronous API through
-/// blocking wrappers.
+/// Lightweight DICOM utility built on DcmSwift primitives (no external service).
 public final class DicomTool {
 
-    /// Shared singleton instance.
     public static let shared = DicomTool()
-
-    private let dicomService: any DicomServiceProtocol
-
-    private init(service: any DicomServiceProtocol = DcmSwiftService.shared) {
-        self.dicomService = service
-    }
+    private init() {}
 
     // MARK: - Decoding
 
     /// Decode a DICOM file and display it in the provided ``DCMImgView``.
-    ///
-    /// - Parameters:
-    ///   - path: Path to a DICOM file on disk.
-    ///   - view: Destination view that will display the decoded pixels.
-    /// - Returns: ``DicomProcessingResult`` describing the outcome.
+    @discardableResult
     public func decodeAndDisplay(path: String, view: DCMImgView) async -> DicomProcessingResult {
-        let url = URL(fileURLWithPath: path)
-        let result = await dicomService.loadDicomImage(from: url)
-
-        switch result {
-        case .success(let imageModel):
-            await MainActor.run {
-                switch imageModel.pixelData {
-                case .uint16(let data):
-                    view.setPixels16(
-                        data,
-                        width: imageModel.width,
-                        height: imageModel.height,
-                        windowWidth: imageModel.windowWidth,
-                        windowCenter: imageModel.windowCenter,
-                        samplesPerPixel: imageModel.samplesPerPixel ?? 1
-                    )
-                case .uint8(let data):
-                    view.setPixels8(
-                        data,
-                        width: imageModel.width,
-                        height: imageModel.height,
-                        windowWidth: imageModel.windowWidth,
-                        windowCenter: imageModel.windowCenter,
-                        samplesPerPixel: imageModel.samplesPerPixel ?? 1
-                    )
-                case .uint24:
-                    break
-                }
-            }
-            return .success
-        case .failure:
+        guard let dicomFile = DicomFile(forPath: path), let dataset = dicomFile.dataset else {
             return .failure(.decodingFailed)
         }
+
+        // Dimensions and basic metadata
+        let rows = Int(dataset.integer16(forTag: "Rows") ?? 0)
+        let cols = Int(dataset.integer16(forTag: "Columns") ?? 0)
+        guard rows > 0, cols > 0 else { return .failure(.decodingFailed) }
+
+        // Window/Level: prefer explicit values from dataset; fall back to heuristic defaults
+        let slope = Double(dataset.string(forTag: "RescaleSlope") ?? "") ?? 1.0
+        let intercept = Double(dataset.string(forTag: "RescaleIntercept") ?? "") ?? 0.0
+        let ww = Int(dataset.string(forTag: "WindowWidth")?.trimmingCharacters(in: .whitespaces) ?? "0") ?? 0
+        let wc = Int(dataset.string(forTag: "WindowCenter")?.trimmingCharacters(in: .whitespaces) ?? "0") ?? 0
+
+        var windowWidth = ww
+        var windowCenter = wc
+        if windowWidth <= 0 || windowCenter == 0 {
+            let modalityString = dataset.string(forTag: "Modality")?.uppercased() ?? ""
+            let modality: DICOMModality
+            switch modalityString {
+            case "CT": modality = .ct
+            case "MR": modality = .mr
+            case "CR": modality = .cr
+            case "DX": modality = .dx
+            case "US": modality = .us
+            case "MG": modality = .mg
+            case "RF": modality = .rf
+            case "XC": modality = .xc
+            case "SC": modality = .sc
+            case "PT": modality = .pt
+            case "NM": modality = .nm
+            default: modality = .other
+            }
+            let calculator = WindowLevelCalculator()
+            let defaults = calculator.defaultWindowLevel(for: modality)
+            let pixels = calculator.calculateWindowLevel(
+                huWidth: Double(defaults.width),
+                huLevel: Double(defaults.level),
+                rescaleSlope: slope,
+                rescaleIntercept: intercept
+            )
+            windowWidth = pixels.pixelWidth
+            windowCenter = pixels.pixelLevel
+        }
+
+        // Extract first frame pixel data
+        guard let pixelData = Self.firstFramePixelData(from: dataset) else {
+            return .failure(.decodingFailed)
+        }
+
+        // Bits allocated determines 8-bit vs 16-bit path
+        let bitsAllocated = Int(dataset.integer16(forTag: "BitsAllocated") ?? 0)
+
+        await MainActor.run {
+            if bitsAllocated > 8 {
+                let pixels16 = Self.toUInt16ArrayLE(pixelData)
+                view.setPixels16(pixels16,
+                                 width: cols,
+                                 height: rows,
+                                 windowWidth: windowWidth,
+                                 windowCenter: windowCenter)
+            } else {
+                let pixels8 = [UInt8](pixelData)
+                view.setPixels8(pixels8,
+                                width: cols,
+                                height: rows,
+                                windowWidth: windowWidth,
+                                windowCenter: windowCenter)
+            }
+        }
+
+        return .success
     }
 
-    /// Synchronous wrapper around ``decodeAndDisplay(path:view:)`` for
-    /// backwards compatibility.
+    /// Synchronous wrapper around ``decodeAndDisplay(path:view:)``.
     @discardableResult
     public func decodeAndDisplay(path: String, view: DCMImgView) -> DicomProcessingResult {
         let semaphore = DispatchSemaphore(value: 0)
@@ -99,77 +121,79 @@ public final class DicomTool {
 
     // MARK: - Validation
 
-    /// Determine whether the supplied path points to a valid DICOM file.
-    /// - Parameter path: File system path to inspect.
-    /// - Returns: `true` when the file can be decoded.
     public func isValidDICOM(at path: String) async -> Bool {
-        let url = URL(fileURLWithPath: path)
-        let result = await dicomService.loadDicomImage(from: url)
-        switch result {
-        case .success:
-            return true
-        case .failure:
-            return false
-        }
+        guard let file = DicomFile(forPath: path), let dataset = file.dataset else { return false }
+        // Attempt to create an image; failure means unsupported/invalid
+        return DicomImage(dataset) != nil
     }
 
-    /// Synchronous wrapper around ``isValidDICOM(at:)``.
     public func isValidDICOM(at path: String) -> Bool {
         let semaphore = DispatchSemaphore(value: 0)
-        var value = false
-        Task {
-            value = await isValidDICOM(at: path)
-            semaphore.signal()
-        }
+        var ok = false
+        Task { ok = await isValidDICOM(at: path); semaphore.signal() }
         semaphore.wait()
-        return value
+        return ok
     }
 
     // MARK: - Metadata
 
-    /// Extract common DICOM instance UIDs from a file.
-    /// - Parameter filePath: Path to the DICOM file on disk.
-    /// - Returns: Study, Series and SOP Instance UIDs when present.
     public func extractDICOMUIDs(from filePath: String) async -> (studyUID: String?, seriesUID: String?, sopUID: String?) {
-        let url = URL(fileURLWithPath: filePath)
-        let metadataResult = await dicomService.extractFullMetadata(from: url)
-
-        switch metadataResult {
-        case .success(let metadata):
-            return (
-                metadata["StudyInstanceUID"] as? String,
-                metadata["SeriesInstanceUID"] as? String,
-                metadata["SOPInstanceUID"] as? String
-            )
-        case .failure:
+        guard let file = DicomFile(forPath: filePath), let dataset = file.dataset else {
             return (nil, nil, nil)
         }
+        return (
+            dataset.string(forTag: "StudyInstanceUID"),
+            dataset.string(forTag: "SeriesInstanceUID"),
+            dataset.string(forTag: "SOPInstanceUID")
+        )
     }
 
-    /// Blocking wrapper around ``extractDICOMUIDs(from:)``.
     public func extractDICOMUIDs(from path: String) -> (studyUID: String?, seriesUID: String?, sopUID: String?) {
         let semaphore = DispatchSemaphore(value: 0)
-        var value: (studyUID: String?, seriesUID: String?, sopUID: String?) = (nil, nil, nil)
-        Task {
-            value = await extractDICOMUIDs(from: path)
-            semaphore.signal()
-        }
+        var value: (String?, String?, String?) = (nil, nil, nil)
+        Task { value = await extractDICOMUIDs(from: path); semaphore.signal() }
         semaphore.wait()
         return value
     }
 
     // MARK: - Convenience
 
-    /// Quickly decode an image and render it for thumbnail generation.
-    /// - Returns: `true` on success.
     public func quickProcess(path: String, view: DCMImgView) async -> Bool {
         switch await decodeAndDisplay(path: path, view: view) {
-        case .success:
-            return true
-        case .failure:
-            return false
+        case .success: return true
+        case .failure: return false
         }
+    }
+
+    // MARK: - Helpers
+
+    private static func firstFramePixelData(from dataset: DataSet) -> Data? {
+        guard let element = dataset.element(forTagName: "PixelData") else { return nil }
+        if let seq = element as? DataSequence {
+            for item in seq.items {
+                if item.length > 128, let data = item.data { return data }
+            }
+            return nil
+        } else {
+            if let framesString = dataset.string(forTag: "NumberOfFrames"), let frames = Int(framesString), frames > 1 {
+                let frameSize = element.length / frames
+                let chunks = element.data.toUnsigned8Array().chunked(into: frameSize)
+                if let first = chunks.first { return Data(first) }
+                return nil
+            } else {
+                return element.data
+            }
+        }
+    }
+
+    private static func toUInt16ArrayLE(_ data: Data) -> [UInt16] {
+        var result = [UInt16](repeating: 0, count: data.count / 2)
+        _ = result.withUnsafeMutableBytes { dst in
+            data.copyBytes(to: dst)
+        }
+        // Ensure little-endian
+        for i in 0..<result.count { result[i] = UInt16(littleEndian: result[i]) }
+        return result
     }
 }
 #endif
-
