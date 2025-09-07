@@ -32,7 +32,7 @@ public final class DCMImgView: UIView {
 
     // MARK: - Cache de imagem 8-bit pós-window
     private var cachedImageData: [UInt8]? = nil
-    private var cachedImageDataValid: Bool = false
+    private var cachedImageValid: Bool = false
 
     // MARK: - Contexto/CoreGraphics
     private var colorspace: CGColorSpace?
@@ -53,10 +53,8 @@ public final class DCMImgView: UIView {
         imgWidth = width
         imgHeight = height
         samplesPerPixel = 1
+        cachedImageValid = false
         setWindow(center: windowCenter, width: windowWidth)
-        cachedImageDataValid = false
-        recomputeImage()
-        setNeedsDisplay()
     }
 
     /// Define pixels 16-bit (grayscale) e aplica window (ou LUT externa, se definida).
@@ -67,10 +65,8 @@ public final class DCMImgView: UIView {
         imgWidth = width
         imgHeight = height
         samplesPerPixel = 1
+        cachedImageValid = false
         setWindow(center: windowCenter, width: windowWidth)
-        cachedImageDataValid = false
-        recomputeImage()
-        setNeedsDisplay()
     }
 
     /// Ajusta window/level explicitamente.
@@ -82,7 +78,7 @@ public final class DCMImgView: UIView {
     /// Define uma LUT 16→8 opcional (tamanho esperado ≥ 65536).
     public func setLUT16(_ lut: [UInt8]?) {
         lut16 = lut
-        cachedImageDataValid = false
+        cachedImageValid = false
         recomputeImage()
         setNeedsDisplay()
     }
@@ -104,8 +100,8 @@ public final class DCMImgView: UIView {
         let newMin = winCenter - winWidth / 2
         let newMax = winCenter + winWidth / 2
 
-        // Se nada mudou, não recomputar.
-        if newMin == lastWinMin && newMax == lastWinMax {
+        // Se nada mudou e cache válido, apenas redesenha.
+        if newMin == lastWinMin && newMax == lastWinMax && cachedImageValid {
             setNeedsDisplay()
             return
         }
@@ -119,7 +115,7 @@ public final class DCMImgView: UIView {
         if lut16 == nil {
             // LUT derivada será (re)gerada em recomputeImage() quando necessário.
         }
-        cachedImageDataValid = false
+        cachedImageValid = false
         recomputeImage()
         setNeedsDisplay()
     }
@@ -156,7 +152,7 @@ public final class DCMImgView: UIView {
             return
         }
 
-        cachedImageDataValid = true
+        cachedImageValid = true
 
         // Construir CGImage a partir do buffer 8-bit.
         guard let cs = colorspace else { return }
