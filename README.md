@@ -109,6 +109,24 @@ Once modified, write the dataset to a file again:
 
     dicomFile.write(atPath: newPath)
 
+### Quick DICOM utilities
+
+`DicomTool` offers high level helpers for working with images:
+
+```swift
+let view = DCMImgView()
+// Decode and show the image
+let result = await DicomTool.shared.decodeAndDisplay(path: "/path/to/image.dcm", view: view)
+
+// Validate a file
+let isValid = await DicomTool.shared.isValidDICOM(at: "/path/to/image.dcm")
+
+// Extract common instance identifiers
+let uids = await DicomTool.shared.extractDICOMUIDs(from: "/path/to/image.dcm")
+```
+
+Synchronous wrappers for these methods are also provided for existing callers.
+
 ## DataSet
 
 ### Read dataset 
