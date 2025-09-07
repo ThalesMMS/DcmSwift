@@ -11,7 +11,7 @@ import Foundation
 #if os(macOS)
 import Quartz
 import AppKit
-
+typealias UIImage = NSImage
 extension NSImage {
     var png: Data? { tiffRepresentation?.bitmap?.png }
 }
@@ -31,7 +31,7 @@ import UIKit
 public class DicomImage {
     
     /// Color space of the image
-    public enum PhotometricInterpretation {
+    public enum PhotometricInterpretation: String {
         case MONOCHROME1
         case MONOCHROME2
         case PALETTE_COLOR
@@ -79,7 +79,6 @@ public class DicomImage {
     public var bitsStored       = 0
     public var bitsPerPixel     = 0
     public var bytesPerRow      = 0
-    
     
     
     
@@ -170,34 +169,54 @@ public class DicomImage {
         self.loadPixelData()
     }
 
-    
-
-    
-    
-    
 #if os(macOS)
     /**
      Creates an `NSImage` for a given frame
      - Important: only for `macOS`
      */
-    public func image(forFrame frame: Int = 0) -> NSImage? {
+    // Replace the existing image(forFrame:) method(s) with this single, powerful one.
+    public func image(forFrame frame: Int = 0, wwl: (width: Int, center: Int)? = nil, inverted: Bool = false) -> UIImage? {
         if !frames.indices.contains(frame) {
-            Logger.error("  -> No such frame (\(frame))")
+            Logger.error("   -> No such frame (\(frame))")
             return nil
         }
         
-        let size = NSSize(width: self.columns, height: self.rows)
         let data = self.frames[frame]
         
-        if TransferSyntax.transfersSyntaxes.contains(self.dataset.transferSyntax.tsUID) {
-            if let cgim = self.imageFromPixels(size: size, pixels: data.toUnsigned8Array(), width: self.columns, height: self.rows) {
-                return NSImage(cgImage: cgim, size: size)
-            }
+        // For uncompressed monochrome images, use our new rendering pipeline
+        if isMonochrome, TransferSyntax.transfersSyntaxes.contains(self.dataset.transferSyntax.tsUID) {
+            let effectiveWidth = wwl?.width ?? self.windowWidth
+            let effectiveCenter = wwl?.center ?? self.windowCenter
+            
+            return renderFrame(
+                pixelData: data,
+                windowWidth: effectiveWidth,
+                windowCenter: effectiveCenter,
+                rescaleSlope: self.rescaleSlope,
+                rescaleIntercept: self.rescaleIntercept,
+                photometricInterpretation: self.photoInter.rawValue,
+                inverted: inverted
+            )
         }
-        else {
+        // For compressed images (like JPEG), create the image directly from the data
+        else if !TransferSyntax.transfersSyntaxes.contains(self.dataset.transferSyntax.tsUID) {
+            #if os(macOS)
             return NSImage(data: data)
+            #elseif os(iOS)
+            return UIImage(data: data)
+            #endif
         }
         
+        // Fallback for other formats (e.g., RGB color)
+        let size = CGSize(width: self.columns, height: self.rows)
+        if let cgim = self.imageFromPixels(size: size, pixels: data.toUnsigned8Array(), width: self.columns, height: self.rows) {
+            #if os(macOS)
+            return NSImage(cgImage: cgim, size: size)
+            #elseif os(iOS)
+            return UIImage(cgImage: cgim)
+            #endif
+        }
+
         return nil
     }
     
@@ -206,14 +225,46 @@ public class DicomImage {
      Creates an `UIImage` for a given frame
      - Important: only for `iOS`
      */
-    public func image(forFrame frame: Int) -> UIImage? {
-        if !frames.indices.contains(frame) { return nil }
-
-        let size = CGSize(width: self.columns, height: self.rows)
+    public func image(forFrame frame: Int = 0, wwl: (width: Int, center: Int)? = nil, inverted: Bool = false) -> UIImage? {
+        if !frames.indices.contains(frame) {
+            Logger.error("   -> No such frame (\(frame))")
+            return nil
+        }
+        
         let data = self.frames[frame]
-
+        
+        // For uncompressed monochrome images, use our new rendering pipeline
+        if isMonochrome, TransferSyntax.transfersSyntaxes.contains(self.dataset.transferSyntax.tsUID) {
+            let effectiveWidth = wwl?.width ?? self.windowWidth
+            let effectiveCenter = wwl?.center ?? self.windowCenter
+            
+            return renderFrame(
+                pixelData: data,
+                windowWidth: effectiveWidth,
+                windowCenter: effectiveCenter,
+                rescaleSlope: self.rescaleSlope,
+                rescaleIntercept: self.rescaleIntercept,
+                photometricInterpretation: self.photoInter.rawValue,
+                inverted: inverted
+            )
+        }
+        // For compressed images (like JPEG), create the image directly from the data
+        else if !TransferSyntax.transfersSyntaxes.contains(self.dataset.transferSyntax.tsUID) {
+            #if os(macOS)
+            return NSImage(data: data)
+            #elseif os(iOS)
+            return UIImage(data: data)
+            #endif
+        }
+        
+        // Fallback for other formats (e.g., RGB color)
+        let size = CGSize(width: self.columns, height: self.rows)
         if let cgim = self.imageFromPixels(size: size, pixels: data.toUnsigned8Array(), width: self.columns, height: self.rows) {
+            #if os(macOS)
+            return NSImage(cgImage: cgim, size: size)
+            #elseif os(iOS)
             return UIImage(cgImage: cgim)
+            #endif
         }
 
         return nil
@@ -225,37 +276,112 @@ public class DicomImage {
     
     
     // MARK: - Private
-    
+
+    private func renderFrame(
+        pixelData: Data,
+        windowWidth: Int,
+        windowCenter: Int,
+        rescaleSlope: Int,
+        rescaleIntercept: Int,
+        photometricInterpretation: String,
+        inverted: Bool
+    ) -> UIImage? {
+        
+        let pixelCount = self.rows * self.columns
+        var buffer8bit = [UInt8](repeating: 0, count: pixelCount)
+        
+        let ww = Double(windowWidth > 0 ? windowWidth : 1) // Prevent division by zero
+        let wc = Double(windowCenter)
+        let slope = Double(rescaleSlope)
+        let intercept = Double(rescaleIntercept)
+        
+        let lowerBound = wc - ww / 2.0
+        let upperBound = wc + ww / 2.0
+
+        pixelData.withUnsafeBytes { (rawBufferPointer: UnsafeRawBufferPointer) in
+            if self.bitsAllocated > 8 {
+                if self.pixelRepresentation == .Signed {
+                    let pixelPtr = rawBufferPointer.bindMemory(to: Int16.self).baseAddress!
+                    for i in 0..<pixelCount {
+                        let rawValue = Double(pixelPtr[i].littleEndian)
+                        let modalityValue = rawValue * slope + intercept
+                        
+                        if modalityValue <= lowerBound { buffer8bit[i] = 0 }
+                        else if modalityValue >= upperBound { buffer8bit[i] = 255 }
+                        else { buffer8bit[i] = UInt8(((modalityValue - lowerBound) / ww) * 255.0) }
+                    }
+                } else { // Unsigned
+                    let pixelPtr = rawBufferPointer.bindMemory(to: UInt16.self).baseAddress!
+                    for i in 0..<pixelCount {
+                        let rawValue = Double(pixelPtr[i].littleEndian)
+                        let modalityValue = rawValue * slope + intercept
+
+                        if modalityValue <= lowerBound { buffer8bit[i] = 0 }
+                        else if modalityValue >= upperBound { buffer8bit[i] = 255 }
+                        else { buffer8bit[i] = UInt8(((modalityValue - lowerBound) / ww) * 255.0) }
+                    }
+                }
+            } else { // 8-bit
+                let pixelPtr = rawBufferPointer.bindMemory(to: UInt8.self).baseAddress!
+                for i in 0..<pixelCount {
+                    let rawValue = Double(pixelPtr[i])
+                    let modalityValue = rawValue * slope + intercept
+
+                    if modalityValue <= lowerBound { buffer8bit[i] = 0 }
+                    else if modalityValue >= upperBound { buffer8bit[i] = 255 }
+                    else { buffer8bit[i] = UInt8(((modalityValue - lowerBound) / ww) * 255.0) }
+                }
+            }
+        }
+        
+        let shouldInvert = (photometricInterpretation == "MONOCHROME1" && !inverted) ||
+                           (photometricInterpretation == "MONOCHROME2" && inverted)
+        
+        if shouldInvert {
+            for i in 0..<pixelCount {
+                buffer8bit[i] = 255 - buffer8bit[i]
+            }
+        }
+        
+        guard let provider = CGDataProvider(data: Data(buffer8bit) as CFData) else { return nil }
+        
+        let cgImage = CGImage(
+            width: self.columns,
+            height: self.rows,
+            bitsPerComponent: 8,
+            bitsPerPixel: 8,
+            bytesPerRow: self.columns,
+            space: CGColorSpaceCreateDeviceGray(),
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
+            provider: provider,
+            decode: nil,
+            shouldInterpolate: true,
+            intent: .defaultIntent
+        )
+        
+        guard let finalCGImage = cgImage else { return nil }
+        
+        #if os(macOS)
+        return NSImage(cgImage: finalCGImage, size: NSSize(width: self.columns, height: self.rows))
+        #elseif os(iOS)
+        return UIImage(cgImage: finalCGImage)
+        #endif
+    }
+
     private func imageFromPixels(size: CGSize, pixels: UnsafeRawPointer, width: Int, height: Int) -> CGImage? {
         var bitmapInfo:CGBitmapInfo = []
-        //var __:UnsafeRawPointer = pixels
         
         if self.isMonochrome {
             self.colorSpace = CGColorSpaceCreateDeviceGray()
-            
-            //bitmapInfo = CGBitmapInfo.byteOrder16Host
-            
-            if self.photoInter == .MONOCHROME1 {
-                
-
-            } else if self.photoInter == .MONOCHROME2 {
-
-            }
         } else {
             if self.photoInter != .ARGB {
                 bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue)
             }
         }
         
-        self.bitsPerPixel = self.samplesPerPixel * self.bitsStored
+        self.bitsPerPixel = self.samplesPerPixel * self.bitsAllocated
         self.bytesPerRow  = width * (self.bitsAllocated / 8) * samplesPerPixel
-        let dataLength = height * bytesPerRow // ??
-        
-        Logger.verbose("  -> width : \(width)")
-        Logger.verbose("  -> height : \(height)")
-        Logger.verbose("  -> bytesPerRow : \(bytesPerRow)")
-        Logger.verbose("  -> bitsPerPixel : \(bitsPerPixel)")
-        Logger.verbose("  -> dataLength : \(dataLength)")
+        let dataLength = height * bytesPerRow
         
         let imageData = NSData(bytes: pixels, length: dataLength)
         let providerRef = CGDataProvider(data: imageData)
@@ -268,9 +394,9 @@ public class DicomImage {
         if let cgim = CGImage(
             width: width,
             height: height,
-            bitsPerComponent: self.bitsAllocated,//self.bitsStored,
+            bitsPerComponent: self.bitsAllocated,
             bitsPerPixel: self.bitsPerPixel,
-            bytesPerRow: self.bytesPerRow, // -> bytes not bits
+            bytesPerRow: self.bytesPerRow,
             space: self.colorSpace,
             bitmapInfo: bitmapInfo,
             provider: providerRef!,
@@ -282,7 +408,6 @@ public class DicomImage {
         }
         
         Logger.error("  -> FATAL: invalid bitmap for CGImage")
-        
         return nil
     }
     
@@ -371,14 +496,7 @@ public class DicomImage {
     }
     
     public func loadPixelData() {
-        // refuse NON native DICOM TS for now
-//        if !DicomConstants.transfersSyntaxes.contains(self.dataset.transferSyntax) {
-//            Logger.error("  -> Unsuppoorted Transfer Syntax")
-//            return;
-//        }
-        
         if let pixelDataElement = self.dataset.element(forTagName: "PixelData") {
-            // Pixel Sequence multiframe
             if let seq = pixelDataElement as? DataSequence {
                 for i in seq.items {
                     if i.data != nil && i.length > 128 {
@@ -386,16 +504,13 @@ public class DicomImage {
                     }
                 }
             } else {
-                // OW/OB multiframe
                 if self.numberOfFrames > 1 {
                     let frameSize = pixelDataElement.length / self.numberOfFrames
                     let chuncks = pixelDataElement.data.toUnsigned8Array().chunked(into: frameSize)
-                    
                     for c in chuncks {
                         self.frames.append(Data(c))
                     }
                 } else {
-                    // solo image
                     if pixelDataElement.data != nil {
                         self.frames.append(pixelDataElement.data)
                     }
