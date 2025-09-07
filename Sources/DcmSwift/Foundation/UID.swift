@@ -58,18 +58,15 @@ public class UID {
         }
         
         for partString in uidSplit {
-            
-            // contains only digits
-            guard let _ = Int(partString) else {
+
+            // components must not be empty and should contain only digits
+            guard !partString.isEmpty, let _ = Int(partString) else {
                 Logger.error("UID \(uid) needs to be made of integers")
                 return false
             }
-            
-            //1st char of a part cannot be a `0`
-            guard let partInt = Int(partString.prefix(1)) else {
-                return false
-            }
-            if partInt == 0 {
+
+            // components with more than one digit cannot start with '0'
+            if partString.count > 1 && partString.hasPrefix("0") {
                 Logger.error("UID \(uid) parts cannot start by '0' digit")
                 return false
             }
