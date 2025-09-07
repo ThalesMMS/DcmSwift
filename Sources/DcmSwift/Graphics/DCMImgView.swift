@@ -3,19 +3,19 @@ import UIKit
 import CoreGraphics
 import Foundation
 
-/// Visão leve para exibir buffers de pixels DICOM (grayscale).
-/// - Foca em redesenhos eficientes (cache pós-window/level) e reuso de CGContext.
-/// - Suporta entrada 8-bit e 16-bit. Para 16-bit, usa LUT (externa ou derivada de window).
+/// Lightweight view for displaying DICOM pixel buffers (grayscale).
+/// - Focuses on efficient redraws (post-window/level cache) and CGContext reuse.
+/// - Supports 8-bit and 16-bit input. For 16-bit, uses a LUT (external or derived from the window).
 @MainActor
 public final class DCMImgView: UIView {
 
-    // MARK: - Estado de Pixels
+    // MARK: - Pixel State
     private var pix8: [UInt8]? = nil
     private var pix16: [UInt16]? = nil
     private var imgWidth: Int = 0
     private var imgHeight: Int = 0
 
-    /// Número de amostras por pixel. Atualmente esperado = 1 (grayscale).
+    /// Number of samples per pixel. Currently expected = 1 (grayscale).
     public var samplesPerPixel: Int = 1
 
     // MARK: - Window/Level
@@ -26,15 +26,15 @@ public final class DCMImgView: UIView {
     private var lastWinMin: Int = Int.min
     private var lastWinMax: Int = Int.min
 
-    // MARK: - LUT para 16-bit→8-bit
-    /// LUT externa opcional. Se presente, é usada em preferência à derivação por window.
+    // MARK: - LUT for 16-bit→8-bit
+    /// Optional external LUT. If present, it's used instead of deriving from the window.
     private var lut16: [UInt8]? = nil
 
-    // MARK: - Cache de imagem 8-bit pós-window
+    // MARK: - Post-window 8-bit image cache
     private var cachedImageData: [UInt8]? = nil
     private var cachedImageDataValid: Bool = false
 
-    // MARK: - Contexto/CoreGraphics
+    // MARK: - Context/CoreGraphics
     private var colorspace: CGColorSpace?
     private var bitmapContext: CGContext?
     private var bitmapImage: CGImage?
@@ -43,9 +43,9 @@ public final class DCMImgView: UIView {
     private var lastContextHeight: Int = 0
     private var lastSamplesPerPixel: Int = 0
 
-    // MARK: - API Pública
+    // MARK: - Public API
 
-    /// Define pixels 8-bit (grayscale) e aplica window.
+    /// Set 8-bit pixels (grayscale) and apply window.
     public func setPixels8(_ pixels: [UInt8], width: Int, height: Int,
                            windowWidth: Int, windowCenter: Int) {
         pix8 = pixels
@@ -59,7 +59,7 @@ public final class DCMImgView: UIView {
         setNeedsDisplay()
     }
 
-    /// Define pixels 16-bit (grayscale) e aplica window (ou LUT externa, se definida).
+    /// Set 16-bit pixels (grayscale) and apply window (or external LUT if provided).
     public func setPixels16(_ pixels: [UInt16], width: Int, height: Int,
                             windowWidth: Int, windowCenter: Int) {
         pix16 = pixels
@@ -73,13 +73,13 @@ public final class DCMImgView: UIView {
         setNeedsDisplay()
     }
 
-    /// Ajusta window/level explicitamente.
+    /// Adjust window/level explicitly.
     public func setWindow(center: Int, width: Int) {
         winCenter = center
         winWidth  = width
     }
 
-    /// Define uma LUT 16→8 opcional (tamanho esperado ≥ 65536).
+    /// Set an optional 16→8 LUT (expected size ≥ 65536).
     public func setLUT16(_ lut: [UInt8]?) {
         lut16 = lut
         cachedImageDataValid = false
@@ -87,7 +87,7 @@ public final class DCMImgView: UIView {
         setNeedsDisplay()
     }
 
-    // MARK: - Desenho
+    // MARK: - Drawing
 
     public override func draw(_ rect: CGRect) {
         guard let image = bitmapImage,
@@ -98,13 +98,13 @@ public final class DCMImgView: UIView {
         ctx.restoreGState()
     }
 
-    // MARK: - Window/Level → trigger
+    // MARK: - Window/Level trigger
 
     private func updateWindowLevel() {
         let newMin = winCenter - winWidth / 2
         let newMax = winCenter + winWidth / 2
 
-        // Se nada mudou, não recomputar.
+        // If nothing changed, skip recomputation.
         if newMin == lastWinMin && newMax == lastWinMax {
             setNeedsDisplay()
             return
@@ -115,21 +115,22 @@ public final class DCMImgView: UIView {
         lastWinMin = newMin
         lastWinMax = newMax
 
-        // Ao mudar window, invalida cache e LUT derivada.
+        // Changing the window invalidates the cache and any derived LUT.
         if lut16 == nil {
-            // LUT derivada será (re)gerada em recomputeImage() quando necessário.
+            // Derived LUT will be generated in recomputeImage() when needed.
         }
         cachedImageDataValid = false
         recomputeImage()
         setNeedsDisplay()
     }
 
-    // MARK: - Construção de imagem (Core)
+    // MARK: - Image construction (core)
 
     private func recomputeImage() {
         guard imgWidth > 0, imgHeight > 0 else { return }
+        guard !cachedImageDataValid else { return }
 
-        // Assegurar reuso de contexto se dimensões/SPP iguais.
+        // Ensure context reuse if dimensions/SPP match.
         if !shouldReuseContext(width: imgWidth, height: imgHeight, samples: samplesPerPixel) {
             resetImage()
             colorspace = (samplesPerPixel == 1) ? CGColorSpaceCreateDeviceGray()
@@ -139,31 +140,31 @@ public final class DCMImgView: UIView {
             lastSamplesPerPixel = samplesPerPixel
         }
 
-        // Alocar/reciclar buffer 8-bit (um canal).
+        // Allocate/reuse 8-bit buffer (single channel).
         let pixelCount = imgWidth * imgHeight
         if cachedImageData == nil || cachedImageData!.count != pixelCount * samplesPerPixel {
             cachedImageData = Array(repeating: 0, count: pixelCount * samplesPerPixel)
         }
 
-        // Caminhos: 8-bit direto OU 16-bit com LUT (externa ou derivada de window)
+        // Paths: direct 8-bit or 16-bit with LUT (external or derived from window)
         if let src8 = pix8 {
             applyWindowTo8(src8, into: &cachedImageData!)
         } else if let src16 = pix16 {
             let lut = lut16 ?? buildDerivedLUT16(winMin: winMin, winMax: winMax)
             applyLUTTo16(src16, lut: lut, into: &cachedImageData!)
         } else {
-            // Nada para fazer
+            // Nothing to do
             return
         }
 
         cachedImageDataValid = true
 
-        // Construir CGImage a partir do buffer 8-bit.
+        // Build CGImage from the 8-bit buffer.
         guard let cs = colorspace else { return }
         cachedImageData!.withUnsafeMutableBytes { buffer in
             guard let base = buffer.baseAddress else { return }
-            // Não fixamos permanentemente 'data' no contexto para evitar reter memória desnecessária:
-            // criamos o contexto, fazemos makeImage(), e descartamos o data pointer.
+            // We don't permanently pin 'data' in the context to avoid retaining unnecessary memory:
+            // create the context, call makeImage(), and discard the data pointer.
             if let ctx = CGContext(data: base,
                                    width: imgWidth,
                                    height: imgHeight,
@@ -185,39 +186,84 @@ public final class DCMImgView: UIView {
     // MARK: - 8-bit window/level
 
     private func applyWindowTo8(_ src: [UInt8], into dst: inout [UInt8]) {
-        let n = imgWidth * imgHeight
-        let denom = max(winMax - winMin, 1)
-        // Desenrolar leve para throughput
-        var i = 0
-        let end = n & ~3
-        while i < end {
-            let v0 = Int(src[i]);     let c0 = min(max(v0 - winMin, 0), denom)
-            let v1 = Int(src[i+1]);   let c1 = min(max(v1 - winMin, 0), denom)
-            let v2 = Int(src[i+2]);   let c2 = min(max(v2 - winMin, 0), denom)
-            let v3 = Int(src[i+3]);   let c3 = min(max(v3 - winMin, 0), denom)
-            dst[i]   = UInt8(c0 * 255 / denom)
-            dst[i+1] = UInt8(c1 * 255 / denom)
-            dst[i+2] = UInt8(c2 * 255 / denom)
-            dst[i+3] = UInt8(c3 * 255 / denom)
-            i += 4
+        let numPixels = imgWidth * imgHeight
+        guard src.count >= numPixels, dst.count >= numPixels else {
+            print("[DCMImgView] Error: pixel buffers too small. Expected \(numPixels), got src: \(src.count) dst: \(dst.count)")
+            return
         }
-        while i < n {
-            let v = Int(src[i])
-            let clamped = min(max(v - winMin, 0), denom)
-            dst[i] = UInt8(clamped * 255 / denom)
-            i += 1
+        let denom = max(winMax - winMin, 1)
+
+        // Parallel CPU path for large images
+        if numPixels > 2_000_000 {
+            let threads = max(1, ProcessInfo.processInfo.activeProcessorCount)
+            let chunkSize = (numPixels + threads - 1) / threads
+            src.withUnsafeBufferPointer { inBuf in
+                dst.withUnsafeMutableBufferPointer { outBuf in
+                    let inBase = inBuf.baseAddress!
+                    let outBase = outBuf.baseAddress!
+                    DispatchQueue.concurrentPerform(iterations: threads) { chunk in
+                        let start = chunk * chunkSize
+                        if start >= numPixels { return }
+                        let end = min(start + chunkSize, numPixels)
+                        var i = start
+                        let fastEnd = end & ~3
+                        while i < fastEnd {
+                            let v0 = Int(inBase[i]);     let c0 = min(max(v0 - winMin, 0), denom)
+                            let v1 = Int(inBase[i+1]);   let c1 = min(max(v1 - winMin, 0), denom)
+                            let v2 = Int(inBase[i+2]);   let c2 = min(max(v2 - winMin, 0), denom)
+                            let v3 = Int(inBase[i+3]);   let c3 = min(max(v3 - winMin, 0), denom)
+                            outBase[i]   = UInt8(c0 * 255 / denom)
+                            outBase[i+1] = UInt8(c1 * 255 / denom)
+                            outBase[i+2] = UInt8(c2 * 255 / denom)
+                            outBase[i+3] = UInt8(c3 * 255 / denom)
+                            i += 4
+                        }
+                        while i < end {
+                            let v = Int(inBase[i])
+                            let clamped = min(max(v - winMin, 0), denom)
+                            outBase[i] = UInt8(clamped * 255 / denom)
+                            i += 1
+                        }
+                    }
+                }
+            }
+        } else {
+            // Sequential path for small images
+            src.withUnsafeBufferPointer { inBuf in
+                dst.withUnsafeMutableBufferPointer { outBuf in
+                    var i = 0
+                    let end = numPixels & ~3
+                    while i < end {
+                        let v0 = Int(inBuf[i]);     let c0 = min(max(v0 - winMin, 0), denom)
+                        let v1 = Int(inBuf[i+1]);   let c1 = min(max(v1 - winMin, 0), denom)
+                        let v2 = Int(inBuf[i+2]);   let c2 = min(max(v2 - winMin, 0), denom)
+                        let v3 = Int(inBuf[i+3]);   let c3 = min(max(v3 - winMin, 0), denom)
+                        outBuf[i]   = UInt8(c0 * 255 / denom)
+                        outBuf[i+1] = UInt8(c1 * 255 / denom)
+                        outBuf[i+2] = UInt8(c2 * 255 / denom)
+                        outBuf[i+3] = UInt8(c3 * 255 / denom)
+                        i += 4
+                    }
+                    while i < numPixels {
+                        let v = Int(inBuf[i])
+                        let clamped = min(max(v - winMin, 0), denom)
+                        outBuf[i] = UInt8(clamped * 255 / denom)
+                        i += 1
+                    }
+                }
+            }
         }
     }
 
     // MARK: - 16-bit via LUT
 
-    /// Constrói LUT derivada de window/level (MONOCHROME2).
+    /// Build a LUT derived from window/level (MONOCHROME2).
     private func buildDerivedLUT16(winMin: Int, winMax: Int) -> [UInt8] {
-        // Tamanho mínimo 65536; se houver mais que 16 bits efetivos, clamp em 65536.
+        // Minimum size 65536; if more than 16 effective bits, clamp at 65536.
         let size = 65536
         var lut = [UInt8](repeating: 0, count: size)
         let denom = max(winMax - winMin, 1)
-        // Gera mapeamento linear clampado.
+        // Generate clamped linear mapping.
         for v in 0..<size {
             let c = min(max(v - winMin, 0), denom)
             lut[v] = UInt8(c * 255 / denom)
@@ -227,12 +273,12 @@ public final class DCMImgView: UIView {
 
     private func applyLUTTo16(_ src: [UInt16], lut: [UInt8], into dst: inout [UInt8]) {
         let numPixels = imgWidth * imgHeight
-        guard src.count >= numPixels else {
-            print("[DCMImgView] Error: pixel array too small. Expected \(numPixels), got \(src.count)")
+        guard src.count >= numPixels, dst.count >= numPixels, lut.count >= 65536 else {
+            print("[DCMImgView] Error: buffer sizes invalid. Pixels expected \(numPixels), got src \(src.count) dst \(dst.count); LUT \(lut.count)")
             return
         }
 
-        // Tenta GPU (stub retorna false por ora)
+        // Try GPU (stub currently returns false)
         let usedGPU = dst.withUnsafeMutableBufferPointer { outBuf in
             src.withUnsafeBufferPointer { inBuf in
                 processPixelsGPU(inputPixels: inBuf.baseAddress!,
@@ -244,7 +290,7 @@ public final class DCMImgView: UIView {
         }
         if usedGPU { return }
 
-        // CPU paralela para imagens grandes
+        // Parallel CPU for large images
         if numPixels > 2_000_000 {
             let threads = max(1, ProcessInfo.processInfo.activeProcessorCount)
             let chunkSize = (numPixels + threads - 1) / threads
@@ -276,7 +322,7 @@ public final class DCMImgView: UIView {
                 }
             }
         } else {
-            // Caminho sequencial (pequenas)
+            // Sequential path for small images
             src.withUnsafeBufferPointer { inBuf in
                 lut.withUnsafeBufferPointer { lutBuf in
                     dst.withUnsafeMutableBufferPointer { outBuf in
@@ -299,7 +345,7 @@ public final class DCMImgView: UIView {
         }
     }
 
-    // MARK: - Helpers de Contexto
+    // MARK: - Context helpers
 
     private func shouldReuseContext(width: Int, height: Int, samples: Int) -> Bool {
         return width == lastContextWidth &&
@@ -319,7 +365,7 @@ public final class DCMImgView: UIView {
                                   pixelCount: Int,
                                   winMin: Int,
                                   winMax: Int) -> Bool {
-        // Integração com Metal/Accelerate pode entrar aqui.
+        // Metal/Accelerate integration could go here.
         return false
     }
 }
