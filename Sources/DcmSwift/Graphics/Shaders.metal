@@ -11,16 +11,26 @@ kernel void windowLevelKernel(
     constant int&          winMin         [[ buffer(3) ]],
     constant uint&         denom          [[ buffer(4) ]],
     constant bool&         invert         [[ buffer(5) ]],
+    constant uint&         inComponents   [[ buffer(6) ]],
     uint                   gid            [[ thread_position_in_grid ]]
 ) {
     if (gid >= count) return;
 
-    ushort src = inPixels[gid];
-    // Match CPU path exactly: clamp(src - winMin, 0, denom) * 255 / denom
-    int c = int(src) - winMin;
-    c = clamp(c, 0, int(denom));
-    float y = float(c) * 255.0f / float(max(1u, denom));
-    uchar v = (uchar)(y + 0.5f);
-    if (invert) v = (uchar)(255 - v);
-    outPixels[gid] = v;
+    uint inBase = gid * inComponents;
+    uint outBase = gid * 4; // always produce RGBA (alpha filled if needed)
+
+    for (uint c = 0; c < inComponents; ++c) {
+        ushort src = inPixels[inBase + c];
+        // Match CPU path exactly: clamp(src - winMin, 0, denom) * 255 / denom
+        int val = int(src) - winMin;
+        val = clamp(val, 0, int(denom));
+        float y = float(val) * 255.0f / float(max(1u, denom));
+        uchar v = (uchar)(y + 0.5f);
+        if (invert) v = (uchar)(255 - v);
+        outPixels[outBase + c] = v;
+    }
+
+    if (inComponents < 4) {
+        outPixels[outBase + 3] = 255; // opaque alpha for RGB input
+    }
 }
