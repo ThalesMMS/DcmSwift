@@ -469,8 +469,6 @@ public final class DicomPixelView: UIView {
         if components == 1 {
             var indices = [Float](repeating: 0, count: numPixels)
             vDSP.integerToFloatingPoint(src, result: &indices)
-            var one: Float = 1
-            vDSP_vsadd(indices, 1, &one, &indices, 1, vDSP_Length(numPixels))
             var lutF = [Float](repeating: 0, count: lut.count)
             vDSP.integerToFloatingPoint(lut, result: &lutF)
             var resultF = [Float](repeating: 0, count: numPixels)
