@@ -473,7 +473,7 @@ public final class DicomPixelView: UIView {
         guard accel.isAvailable,
               let device = accel.device,
               let pso = accel.windowLevelPipelineState,
-              let queue = device.makeCommandQueue()
+              let queue = accel.commandQueue
         else { return false }
         let t0 = enablePerfMetrics ? CFAbsoluteTimeGetCurrent() : 0
 
@@ -487,7 +487,10 @@ public final class DicomPixelView: UIView {
                                             length: inLen,
                                             options: .storageModeShared,
                                             deallocator: nil),
-              let outBuf = device.makeBuffer(length: outLen, options: .storageModeShared)
+              let outBuf = device.makeBuffer(bytesNoCopy: UnsafeMutableRawPointer(outputPixels),
+                                            length: outLen,
+                                            options: .storageModeShared,
+                                            deallocator: nil)
         else { return false }
 
         var uCount = UInt32(pixelCount)
@@ -512,17 +515,14 @@ public final class DicomPixelView: UIView {
         enc.setBuffer(winBuf, offset: 0, index: 4)
         enc.setBuffer(invBuf, offset: 0, index: 5)
 
-        let w = pso.threadExecutionWidth
-        let tpt = MTLSize(width: max(1, min(w, 256)), height: 1, depth: 1)
-        let threads = MTLSize(width: pixelCount, height: 1, depth: 1)
-        enc.dispatchThreads(threads, threadsPerThreadgroup: tpt)
+        let w = min(pso.threadExecutionWidth, pso.maxTotalThreadsPerThreadgroup)
+        let threadsPerGroup = MTLSize(width: w, height: 1, depth: 1)
+        let threadgroups = MTLSize(width: (pixelCount + w - 1) / w, height: 1, depth: 1)
+        enc.dispatchThreadgroups(threadgroups, threadsPerThreadgroup: threadsPerGroup)
         enc.endEncoding()
 
         cmd.commit()
         cmd.waitUntilCompleted()
-
-        let ptr = outBuf.contents()
-        memcpy(outputPixels, ptr, outLen)
         if enablePerfMetrics {
             let dt = CFAbsoluteTimeGetCurrent() - t0
             print("[PERF][DicomPixelView] GPU WL dt=\(String(format: "%.3f", dt*1000)) ms for \(pixelCount) px")
