@@ -1,6 +1,6 @@
 //
 //  File.swift
-//  
+//
 //
 //  Created by Rafael Warnault, OPALE on 12/07/2021.
 //
@@ -94,6 +94,9 @@ public class OffsetInputStream {
 
         // allocate memory buffer with given length
         let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: length)
+        // --- CONFLICT RESOLVED ---
+        // Using `defer` is the correct and safe Swift pattern for memory management.
+        defer { buffer.deallocate() } // ensure buffer is freed even on early return
 
         // fill the buffer by reading bytes with given length
         let read = stream.read(buffer, maxLength: length)
@@ -108,9 +111,9 @@ public class OffsetInputStream {
 
         // maintain local offset
         offset += read
-
-        // clean the memory
-        buffer.deallocate()
+        
+        // --- CONFLICT RESOLVED ---
+        // The explicit deallocate call is removed because the `defer` block now handles it.
 
         return data
     }
