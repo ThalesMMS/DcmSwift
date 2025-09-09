@@ -7,7 +7,6 @@
 //
 
 import Foundation
-import Network
 
 /**
  A DicomEntity represents a Dicom Applicatin Entity (AE).
@@ -67,7 +66,8 @@ public class DicomEntity : Codable, CustomStringConvertible {
                     
                     // Convert interface address to a human readable string
                     var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-                    getnameinfo(interface.ifa_addr, socklen_t(interface.ifa_addr.pointee.sa_len),
+                    let addrLen = socklen_t(interface.ifa_addr.pointee.sa_family == AF_INET ? MemoryLayout<sockaddr_in>.size : MemoryLayout<sockaddr_in6>.size)
+                    getnameinfo(interface.ifa_addr, addrLen,
                                 &hostname, socklen_t(hostname.count),
                                 nil, socklen_t(0), NI_NUMERICHOST)
                     
