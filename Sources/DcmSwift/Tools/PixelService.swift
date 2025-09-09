@@ -6,7 +6,9 @@
 //
 
 import Foundation
+#if canImport(os)
 import os
+#endif
 
 /// A lightweight, reusable pixel decoding surface for applications.
 /// Centralizes first-frame extraction and basic pixel buffer preparation.

@@ -7,7 +7,9 @@
 //
 
 import Foundation
+#if canImport(Network)
 import Network
+#endif
 
 /**
  A DicomEntity represents a Dicom Applicatin Entity (AE).
