@@ -8,6 +8,10 @@
 
 import Foundation
 
+#if canImport(Accelerate)
+import Accelerate
+#endif
+
 #if os(macOS)
 import Quartz
 import AppKit
@@ -310,17 +314,65 @@ public class DicomImage {
         photometricInterpretation: String,
         inverted: Bool
     ) -> UIImage? {
-        
+
         let pixelCount = self.rows * self.columns
         var buffer8bit = [UInt8](repeating: 0, count: pixelCount)
-        
-        let ww = Double(windowWidth > 0 ? windowWidth : 1) // Prevent division by zero
-        let wc = Double(windowCenter)
-        let slope = Double(rescaleSlope)
-        let intercept = Double(rescaleIntercept)
-        
+
+        let ww = Float(windowWidth > 0 ? windowWidth : 1)
+        let wc = Float(windowCenter)
+        let slope = Float(rescaleSlope)
+        let intercept = Float(rescaleIntercept)
+
         let lowerBound = wc - ww / 2.0
         let upperBound = wc + ww / 2.0
+
+        let shouldInvert = (photometricInterpretation == "MONOCHROME1" && !inverted) ||
+                           (photometricInterpretation == "MONOCHROME2" && inverted)
+
+#if canImport(Accelerate)
+        var floatPixels = [Float](repeating: 0, count: pixelCount)
+        pixelData.withUnsafeBytes { rawBufferPointer in
+            if self.bitsAllocated > 8 {
+                if self.pixelRepresentation == .Signed {
+                    let src = rawBufferPointer.bindMemory(to: Int16.self)
+                    vDSP.integerToFloatingPoint(src, result: &floatPixels)
+                } else {
+                    let src = rawBufferPointer.bindMemory(to: UInt16.self)
+                    vDSP.integerToFloatingPoint(src, result: &floatPixels)
+                }
+            } else {
+                let src = rawBufferPointer.bindMemory(to: UInt8.self)
+                vDSP.integerToFloatingPoint(src, result: &floatPixels)
+            }
+        }
+
+        var m = slope
+        var b = intercept
+        vDSP_vsmsa(floatPixels, 1, &m, &b, &floatPixels, 1, vDSP_Length(pixelCount))
+
+        var lo = lowerBound
+        var hi = upperBound
+        vDSP_vclip(floatPixels, 1, &lo, &hi, &floatPixels, 1, vDSP_Length(pixelCount))
+
+        var negLo = -lo
+        vDSP_vsadd(floatPixels, 1, &negLo, &floatPixels, 1, vDSP_Length(pixelCount))
+
+        var scale = Float(255) / ww
+        vDSP_vsmul(floatPixels, 1, &scale, &floatPixels, 1, vDSP_Length(pixelCount))
+
+        if shouldInvert {
+            var minusOne: Float = -1
+            var maxVal: Float = 255
+            vDSP_vsmsa(floatPixels, 1, &minusOne, &maxVal, &floatPixels, 1, vDSP_Length(pixelCount))
+        }
+
+        vDSP_vfixu8(floatPixels, 1, &buffer8bit, 1, vDSP_Length(pixelCount))
+#else
+        let wwD = Double(ww)
+        let slopeD = Double(slope)
+        let interceptD = Double(intercept)
+        let lowerBoundD = Double(lowerBound)
+        let upperBoundD = Double(upperBound)
 
         pixelData.withUnsafeBytes { (rawBufferPointer: UnsafeRawBufferPointer) in
             if self.bitsAllocated > 8 {
@@ -328,44 +380,42 @@ public class DicomImage {
                     let pixelPtr = rawBufferPointer.bindMemory(to: Int16.self).baseAddress!
                     for i in 0..<pixelCount {
                         let rawValue = Double(pixelPtr[i].littleEndian)
-                        let modalityValue = rawValue * slope + intercept
-                        
-                        if modalityValue <= lowerBound { buffer8bit[i] = 0 }
-                        else if modalityValue >= upperBound { buffer8bit[i] = 255 }
-                        else { buffer8bit[i] = UInt8(((modalityValue - lowerBound) / ww) * 255.0) }
+                        let modalityValue = rawValue * slopeD + interceptD
+
+                        if modalityValue <= lowerBoundD { buffer8bit[i] = 0 }
+                        else if modalityValue >= upperBoundD { buffer8bit[i] = 255 }
+                        else { buffer8bit[i] = UInt8(((modalityValue - lowerBoundD) / wwD) * 255.0) }
                     }
                 } else { // Unsigned
                     let pixelPtr = rawBufferPointer.bindMemory(to: UInt16.self).baseAddress!
                     for i in 0..<pixelCount {
                         let rawValue = Double(pixelPtr[i].littleEndian)
-                        let modalityValue = rawValue * slope + intercept
+                        let modalityValue = rawValue * slopeD + interceptD
 
-                        if modalityValue <= lowerBound { buffer8bit[i] = 0 }
-                        else if modalityValue >= upperBound { buffer8bit[i] = 255 }
-                        else { buffer8bit[i] = UInt8(((modalityValue - lowerBound) / ww) * 255.0) }
+                        if modalityValue <= lowerBoundD { buffer8bit[i] = 0 }
+                        else if modalityValue >= upperBoundD { buffer8bit[i] = 255 }
+                        else { buffer8bit[i] = UInt8(((modalityValue - lowerBoundD) / wwD) * 255.0) }
                     }
                 }
             } else { // 8-bit
                 let pixelPtr = rawBufferPointer.bindMemory(to: UInt8.self).baseAddress!
                 for i in 0..<pixelCount {
                     let rawValue = Double(pixelPtr[i])
-                    let modalityValue = rawValue * slope + intercept
+                    let modalityValue = rawValue * slopeD + interceptD
 
-                    if modalityValue <= lowerBound { buffer8bit[i] = 0 }
-                    else if modalityValue >= upperBound { buffer8bit[i] = 255 }
-                    else { buffer8bit[i] = UInt8(((modalityValue - lowerBound) / ww) * 255.0) }
+                    if modalityValue <= lowerBoundD { buffer8bit[i] = 0 }
+                    else if modalityValue >= upperBoundD { buffer8bit[i] = 255 }
+                    else { buffer8bit[i] = UInt8(((modalityValue - lowerBoundD) / wwD) * 255.0) }
                 }
             }
         }
-        
-        let shouldInvert = (photometricInterpretation == "MONOCHROME1" && !inverted) ||
-                           (photometricInterpretation == "MONOCHROME2" && inverted)
-        
+
         if shouldInvert {
             for i in 0..<pixelCount {
                 buffer8bit[i] = 255 - buffer8bit[i]
             }
         }
+#endif
         
         guard let provider = CGDataProvider(data: Data(buffer8bit) as CFData) else { return nil }
         

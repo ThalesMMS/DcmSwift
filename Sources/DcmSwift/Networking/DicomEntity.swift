@@ -32,13 +32,12 @@ public class DicomEntity : Codable, CustomStringConvertible {
     }
     
     public func paddedTitleData() -> Data? {
-        var data = self.title.data(using: .utf8)
-        
-        if data!.count < 16 {
-            // AE titles must be padded with SPACE (0x20), not NULL (0x00)
-            data!.append(Data(repeating: 0x20, count: 16-data!.count))
+        guard var data = self.title.data(using: .utf8) else { return nil }
+        if data.count < 16 {
+            data.append(Data(repeating: 0x20, count: 16 - data.count))
+        } else if data.count > 16 {
+            data = data.prefix(16)
         }
-        
         return data
     }
     
@@ -69,7 +68,8 @@ public class DicomEntity : Codable, CustomStringConvertible {
                     
                     // Convert interface address to a human readable string
                     var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-                    getnameinfo(interface.ifa_addr, socklen_t(interface.ifa_addr.pointee.sa_len),
+                    let addrLen = socklen_t(interface.ifa_addr.pointee.sa_family == AF_INET ? MemoryLayout<sockaddr_in>.size : MemoryLayout<sockaddr_in6>.size)
+                    getnameinfo(interface.ifa_addr, addrLen,
                                 &hostname, socklen_t(hostname.count),
                                 nil, socklen_t(0), NI_NUMERICHOST)
                     
