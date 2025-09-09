@@ -5,6 +5,9 @@ import Foundation
 #if canImport(Metal)
 import Metal
 #endif
+#if canImport(Accelerate)
+import Accelerate
+#endif
 
 /// Lightweight view for displaying DICOM pixel buffers (grayscale).
 /// - Focuses on efficient redraws (post-window/level cache) and CGContext reuse.
@@ -39,6 +42,12 @@ public final class DicomPixelView: UIView {
 
     // Raw RGB(A) buffer (pass-through, no windowing). When set, we ignore pix8/pix16.
     private var pixRGBA: [UInt8]? = nil
+
+#if canImport(Metal)
+    // Reusable GPU buffers for window/level compute pipeline
+    private var gpuInBuffer: MTLBuffer? = nil
+    private var gpuOutBuffer: MTLBuffer? = nil
+#endif
 
     // MARK: - Context/CoreGraphics
     private var colorspace: CGColorSpace?
@@ -282,6 +291,24 @@ public final class DicomPixelView: UIView {
         }
         let denom = max(winMax - winMin, 1)
 
+#if canImport(Accelerate)
+        // Vectorized path using Accelerate when available
+        if numPixels > 4096 {
+            var floatSrc = src.map { Float($0) }
+            var lower = Float(winMin)
+            var upper = Float(winMax)
+            vDSP_vclip(floatSrc, 1, &lower, &upper, &floatSrc, 1, vDSP_Length(numPixels))
+            var subtract = Float(winMin)
+            vDSP_vsadd(floatSrc, 1, &(-subtract), &floatSrc, 1, vDSP_Length(numPixels))
+            var scale = Float(255) / Float(denom)
+            vDSP_vsmul(floatSrc, 1, &scale, &floatSrc, 1, vDSP_Length(numPixels))
+            var u8 = [UInt8](repeating: 0, count: numPixels)
+            vDSP_vfixu8(floatSrc, 1, &u8, 1, vDSP_Length(numPixels))
+            dst.replaceSubrange(0..<numPixels, with: u8)
+            return
+        }
+#endif
+
         // Parallel CPU path for large images
         if numPixels > 2_000_000 {
             let threads = max(1, ProcessInfo.processInfo.activeProcessorCount)
@@ -453,6 +480,10 @@ public final class DicomPixelView: UIView {
         cachedImageData = nil
         cachedImageDataValid = false
         resetImage()
+#if canImport(Metal)
+        gpuInBuffer = nil
+        gpuOutBuffer = nil
+#endif
     }
 
     /// Rough memory usage estimate for current buffers (bytes).
@@ -487,15 +518,14 @@ public final class DicomPixelView: UIView {
         let inLen = pixelCount * MemoryLayout<UInt16>.stride
         let outLen = pixelCount * MemoryLayout<UInt8>.stride
 
-        guard let inBuf = device.makeBuffer(bytesNoCopy: UnsafeMutableRawPointer(mutating: inputPixels),
-                                            length: inLen,
-                                            options: .storageModeShared,
-                                            deallocator: nil),
-              let outBuf = device.makeBuffer(bytesNoCopy: UnsafeMutableRawPointer(outputPixels),
-                                             length: outLen,
-                                             options: .storageModeShared,
-                                             deallocator: nil)
-        else { return false }
+        if gpuInBuffer == nil || gpuInBuffer!.length < inLen {
+            gpuInBuffer = device.makeBuffer(length: inLen, options: .storageModeShared)
+        }
+        if gpuOutBuffer == nil || gpuOutBuffer!.length < outLen {
+            gpuOutBuffer = device.makeBuffer(length: outLen, options: .storageModeShared)
+        }
+        guard let inBuf = gpuInBuffer, let outBuf = gpuOutBuffer else { return false }
+        memcpy(inBuf.contents(), inputPixels, inLen)
 
         var uCount = UInt32(pixelCount)
         var sWinMin = Int32(winMin)
@@ -526,6 +556,9 @@ public final class DicomPixelView: UIView {
 
         cmd.commit()
         cmd.waitUntilCompleted()
+
+        memcpy(outputPixels, outBuf.contents(), outLen)
+
         if enablePerfMetrics {
             let dt = CFAbsoluteTimeGetCurrent() - t0
             print("[PERF][DicomPixelView] GPU WL dt=\(String(format: "%.3f", dt*1000)) ms for \(pixelCount) px")

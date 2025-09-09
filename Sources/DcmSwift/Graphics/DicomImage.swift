@@ -495,27 +495,43 @@ public class DicomImage {
         }
     }
     
+    /// Load all pixel data into memory. For large multi-frame images this may be expensive.
+    /// Consider using ``streamFrames(_:)`` to iterate frames without retaining them all.
     public func loadPixelData() {
-        if let pixelDataElement = self.dataset.element(forTagName: "PixelData") {
-            if let seq = pixelDataElement as? DataSequence {
-                for i in seq.items {
-                    if i.data != nil && i.length > 128 {
-                        self.frames.append(i.data)
-                    }
-                }
-            } else {
-                if self.numberOfFrames > 1 {
-                    let frameSize = pixelDataElement.length / self.numberOfFrames
-                    let chuncks = pixelDataElement.data.toUnsigned8Array().chunked(into: frameSize)
-                    for c in chuncks {
-                        self.frames.append(Data(c))
-                    }
-                } else {
-                    if pixelDataElement.data != nil {
-                        self.frames.append(pixelDataElement.data)
-                    }
+        self.frames.removeAll(keepingCapacity: true)
+        streamFrames { data in
+            self.frames.append(data)
+            return true
+        }
+    }
+
+    /// Incrementally iterate over pixel data frames without storing them.
+    /// - Parameter handler: Called once per frame. Return `false` to stop iteration early.
+    /// - Note: For single-frame images the handler is still invoked once.
+    public func streamFrames(_ handler: (Data) -> Bool) {
+        guard let pixelDataElement = self.dataset.element(forTagName: "PixelData") else { return }
+
+        if let seq = pixelDataElement as? DataSequence {
+            for item in seq.items {
+                if let data = item.data, item.length > 128 {
+                    if !handler(data) { break }
                 }
             }
+            return
+        }
+
+        if self.numberOfFrames > 1 {
+            let frameSize = pixelDataElement.length / self.numberOfFrames
+            let bytes = pixelDataElement.data.toUnsigned8Array()
+            var offset = 0
+            for _ in 0..<self.numberOfFrames {
+                let end = min(offset + frameSize, bytes.count)
+                let chunk = Data(bytes[offset..<end])
+                offset += frameSize
+                if !handler(chunk) { break }
+            }
+        } else if let data = pixelDataElement.data {
+            _ = handler(data)
         }
     }
 }
