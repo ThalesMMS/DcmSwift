@@ -88,60 +88,86 @@ public class DicomImage {
     
     public init?(_ dataset:DataSet) {
         self.dataset = dataset
-        
+        configureMetadata()
+        self.loadPixelData()
+    }
+
+    /// Initialize a DicomImage by streaming pixel data directly from a DicomInputStream.
+    /// - Parameters:
+    ///   - stream: The input stream to read from.
+    ///   - pixelHandler: Optional handler invoked for each pixel fragment as it is read.
+    public init?(stream: DicomInputStream, pixelHandler: ((Data) -> Bool)? = nil) {
+        var collected:[Data] = []
+        let handler = pixelHandler ?? { fragment in collected.append(fragment); return true }
+
+        guard let ds = try? stream.readDataset(pixelDataHandler: handler) else {
+            return nil
+        }
+
+        self.dataset = ds
+        self.frames = collected
+        configureMetadata()
+
+        if pixelHandler == nil && numberOfFrames == 0 {
+            numberOfFrames = frames.count
+        }
+    }
+
+    /// Extract important metadata from the dataset and populate image properties.
+    private func configureMetadata() {
         if let pi = self.dataset.string(forTag: "PhotometricInterpretation") {
             if pi.trimmingCharacters(in: CharacterSet.whitespaces) == "MONOCHROME1" {
                 self.photoInter = .MONOCHROME1
                 self.isMonochrome = true
-                
+
             } else if pi.trimmingCharacters(in: CharacterSet.whitespaces) == "MONOCHROME2" {
                 self.photoInter = .MONOCHROME2
                 self.isMonochrome = true
-                
+
             } else if pi.trimmingCharacters(in: CharacterSet.whitespaces) == "ARGB" {
                 self.photoInter = .ARGB
-                
+
             } else if pi.trimmingCharacters(in: CharacterSet.whitespaces) == "RGB" {
                 self.photoInter = .RGB
             }
         }
-        
+
         if let v = self.dataset.integer16(forTag: "Rows") {
             self.rows = Int(v)
         }
-        
+
         if let v = self.dataset.integer16(forTag: "Columns") {
             self.columns = Int(v)
         }
-        
+
         if let v = self.dataset.string(forTag: "WindowWidth") {
             self.windowWidth = Int(v) ?? self.windowWidth
         }
-        
+
         if let v = self.dataset.string(forTag: "WindowCenter") {
             self.windowCenter = Int(v) ?? self.windowCenter
         }
-        
+
         if let v = self.dataset.string(forTag: "RescaleSlope") {
             self.rescaleSlope = Int(v) ?? self.rescaleSlope
         }
-        
+
         if let v = self.dataset.string(forTag: "RescaleIntercept") {
             self.rescaleIntercept = Int(v) ?? self.rescaleIntercept
         }
-        
+
         if let v = self.dataset.integer16(forTag: "BitsAllocated") {
             self.bitsAllocated = Int(v)
         }
-        
+
         if let v = self.dataset.integer16(forTag: "BitsStored") {
             self.bitsStored = Int(v)
         }
-        
+
         if let v = self.dataset.integer16(forTag: "SamplesPerPixel") {
             self.samplesPerPixel = Int(v)
         }
-        
+
         if let v = self.dataset.integer16(forTag: "PixelRepresentation") {
             if v == 0 {
                 self.pixelRepresentation = .Unsigned
@@ -149,18 +175,18 @@ public class DicomImage {
                 self.pixelRepresentation = .Signed
             }
         }
-        
+
         if self.dataset.hasElement(forTagName: "PixelData") {
             self.numberOfFrames = 1
         }
-        
+
         if let nofString = self.dataset.string(forTag: "NumberOfFrames") {
             if let nof = Int(nofString) {
                 self.isMultiframe   = true
                 self.numberOfFrames = nof
             }
         }
-        
+
         Logger.verbose("  -> rows : \(self.rows)")
         Logger.verbose("  -> columns : \(self.columns)")
         Logger.verbose("  -> photoInter : \(photoInter)")
@@ -169,8 +195,6 @@ public class DicomImage {
         Logger.verbose("  -> samplesPerPixel : \(samplesPerPixel)")
         Logger.verbose("  -> bitsAllocated : \(bitsAllocated)")
         Logger.verbose("  -> bitsStored : \(bitsStored)")
-        
-        self.loadPixelData()
     }
 
 #if os(macOS)

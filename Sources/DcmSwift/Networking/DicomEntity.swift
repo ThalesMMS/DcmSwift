@@ -7,6 +7,9 @@
 //
 
 import Foundation
+#if canImport(Network)
+import Network
+#endif
 
 /**
  A DicomEntity represents a Dicom Applicatin Entity (AE).
@@ -29,13 +32,12 @@ public class DicomEntity : Codable, CustomStringConvertible {
     }
     
     public func paddedTitleData() -> Data? {
-        var data = self.title.data(using: .utf8)
-        
-        if data!.count < 16 {
-            // AE titles must be padded with SPACE (0x20), not NULL (0x00)
-            data!.append(Data(repeating: 0x20, count: 16-data!.count))
+        guard var data = self.title.data(using: .utf8) else { return nil }
+        if data.count < 16 {
+            data.append(Data(repeating: 0x20, count: 16 - data.count))
+        } else if data.count > 16 {
+            data = data.prefix(16)
         }
-        
         return data
     }
     
