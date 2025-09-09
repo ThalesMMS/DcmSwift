@@ -424,6 +424,10 @@ public final class DicomPixelView: UIView {
 
     private func applyWindowTo16GPU(_ src: [UInt16], into dst: inout [UInt8]) -> Bool {
         let numPixels = imgWidth * imgHeight
+        guard src.count >= numPixels, dst.count >= numPixels else {
+            print("[DicomPixelView] Error: pixel buffers too small. Expected \(numPixels), got src: \(src.count) dst: \(dst.count)")
+            return false
+        }
         return dst.withUnsafeMutableBufferPointer { outBuf in
             src.withUnsafeBufferPointer { inBuf in
                 processPixelsGPU(inputPixels: inBuf.baseAddress!,
