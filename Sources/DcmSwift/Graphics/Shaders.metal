@@ -17,20 +17,32 @@ kernel void windowLevelKernel(
     if (gid >= count) return;
 
     uint inBase = gid * inComponents;
-    uint outBase = gid * 4; // always produce RGBA (alpha filled if needed)
+    uint outStride = (inComponents == 1) ? 1 : 4;
+    uint outBase = gid * outStride;
 
-    for (uint c = 0; c < inComponents; ++c) {
-        ushort src = inPixels[inBase + c];
+    if (inComponents == 1) {
+        ushort src = inPixels[inBase];
         // Match CPU path exactly: clamp(src - winMin, 0, denom) * 255 / denom
         int val = int(src) - winMin;
         val = clamp(val, 0, int(denom));
         float y = float(val) * 255.0f / float(max(1u, denom));
         uchar v = (uchar)(y + 0.5f);
         if (invert) v = (uchar)(255 - v);
-        outPixels[outBase + c] = v;
-    }
+        outPixels[outBase] = v;
+    } else {
+        for (uint c = 0; c < inComponents; ++c) {
+            ushort src = inPixels[inBase + c];
+            // Match CPU path exactly: clamp(src - winMin, 0, denom) * 255 / denom
+            int val = int(src) - winMin;
+            val = clamp(val, 0, int(denom));
+            float y = float(val) * 255.0f / float(max(1u, denom));
+            uchar v = (uchar)(y + 0.5f);
+            if (invert) v = (uchar)(255 - v);
+            outPixels[outBase + c] = v;
+        }
 
-    if (inComponents < 4) {
-        outPixels[outBase + 3] = 255; // opaque alpha for RGB input
+        if (inComponents < 4) {
+            outPixels[outBase + 3] = 255; // opaque alpha for RGB input
+        }
     }
 }
