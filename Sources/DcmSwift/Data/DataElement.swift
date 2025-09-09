@@ -99,10 +99,9 @@ public class DataElement : DicomObject {
                 
         if self.isMultiple {
             if let string = val as? String {
-                self.data       = string.data(using: .utf8)
-                self.length     = self.data.count
+                self.data       = string.data(using: .utf8) ?? Data()
                 self.dataValues = []
-                
+
                 let slice = string.components(separatedBy: "\\")
                 var index = 0
                 
@@ -112,25 +111,20 @@ public class DataElement : DicomObject {
                     index += 1
                 }
                 
+                // Ensure proper padding for even length
+                padDataIfNecessary()
+                self.length = self.data.count
+
                 ret = true
             }
         } else {
             if let string = val as? String {
                 self.data = string.data(using: .utf8) ?? Data()
-                
                 // DICOM Standard Part 5, Section 6.2: Padding rules
                 // Text strings must be padded with SPACE (0x20), UIDs with NULL (0x00)
-                if self.data.count % 2 != 0 {
-                    if self.vr == .UI {
-                        // UIDs use NULL padding
-                        self.data.append(byte: 0x00)
-                    } else {
-                        // All text-based VRs use SPACE padding
-                        self.data.append(byte: 0x20)
-                    }
-                }
+                padDataIfNecessary()
                 self.length = self.data.count
-                
+
                 ret = true
             }
             else if let v = val as? UInt16 {
@@ -321,7 +315,10 @@ public class DataElement : DicomObject {
     
     public override func toData(vrMethod inVrMethod:VRMethod = .Explicit, byteOrder inByteOrder:ByteOrder = .LittleEndian) -> Data {
         var data = Data()
-        
+
+        // Ensure data has proper even length according to DICOM padding rules
+        padDataIfNecessary()
+
         // Debug logging for CommandGroupLength
         if self.name == "CommandGroupLength" {
             Logger.debug("DataElement.toData: Serializing CommandGroupLength")
@@ -533,6 +530,32 @@ public class DataElement : DicomObject {
     
     
     // MARK: - Private
+    private func padDataIfNecessary() {
+        guard self.data != nil else { return }
+        if self.data.count % 2 != 0 {
+            if self.vr == .UI {
+                // UIDs use NULL padding
+                self.data.append(byte: 0x00)
+            } else if requiresTextPadding(self.vr) {
+                // Text-based VRs use SPACE padding
+                self.data.append(byte: 0x20)
+            } else {
+                // Default to NULL padding for other VRs
+                self.data.append(byte: 0x00)
+            }
+        }
+        self.length = self.data.count
+    }
+
+    private func requiresTextPadding(_ vr: VR.VR) -> Bool {
+        switch vr {
+        case .AE, .AS, .CS, .DA, .DS, .DT, .IS, .LO, .LT, .PN, .SH, .ST, .TM, .UT:
+            return true
+        default:
+            return false
+        }
+    }
+
     private func recalculateParentsLength() {
         var p = self.parent
         
