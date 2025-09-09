@@ -6,7 +6,9 @@
 //
 
 import Foundation
+#if canImport(os)
 import os
+#endif
 
 /// A lightweight, reusable pixel decoding surface for applications.
 /// Centralizes first-frame extraction and basic pixel buffer preparation.
@@ -55,7 +57,12 @@ public enum PixelServiceError: Error, LocalizedError {
 public final class PixelService: @unchecked Sendable {
     public static let shared = PixelService()
     private init() {}
+#if canImport(os)
     private let oslog = os.Logger(subsystem: "com.isis.dicomviewer", category: "PixelService")
+#else
+    private struct DummyLogger { func debug(_ msg: String) {} }
+    private let oslog = DummyLogger()
+#endif
 
     /// Decode the first available frame in the dataset into a display-ready buffer.
     /// - Note: For color images this returns raw 8-bit data; consumers may convert as needed.

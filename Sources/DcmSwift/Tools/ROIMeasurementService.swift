@@ -1,3 +1,4 @@
+#if canImport(CoreGraphics)
 import Foundation
 import CoreGraphics
 #if canImport(UIKit)
@@ -39,9 +40,9 @@ public struct ROIMeasurementData: Sendable {
         self.value = value
         self.pixelSpacing = pixelSpacing
     }
-}
+  }
 
-/// Result returned when a measurement is completed
+  /// Result returned when a measurement is completed
 public struct MeasurementResult: Sendable {
     public let measurement: ROIMeasurementData
     public let displayValue: String
@@ -216,3 +217,4 @@ public final class ROIMeasurementService: ROIMeasurementServiceProtocol {
     #endif
 }
 
+#endif

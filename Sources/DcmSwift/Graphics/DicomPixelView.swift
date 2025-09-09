@@ -74,6 +74,8 @@ public final class DicomPixelView: UIView {
         samplesPerPixel = 1
         srcSamplesPerPixel = 1
         setWindow(center: windowCenter, width: windowWidth)
+        // --- CONFLICT RESOLVED ---
+        // Adopting the immediate recompute call from the 'codex' branch for consistency.
         cachedImageDataValid = false
         recomputeImmediately()
     }
@@ -89,6 +91,8 @@ public final class DicomPixelView: UIView {
         samplesPerPixel = 1
         srcSamplesPerPixel = 1
         setWindow(center: windowCenter, width: windowWidth)
+        // --- CONFLICT RESOLVED ---
+        // Adopting the immediate recompute call from the 'codex' branch.
         cachedImageDataValid = false
         recomputeImmediately()
     }
@@ -140,6 +144,8 @@ public final class DicomPixelView: UIView {
         srcSamplesPerPixel = 4
         // Windowing does not apply for true color; preserve current WL but do not recompute mapping.
         cachedImageDataValid = false
+        // --- CONFLICT RESOLVED ---
+        // Adopting the immediate recompute call from the 'codex' branch.
         recomputeImmediately()
     }
 
@@ -171,6 +177,8 @@ public final class DicomPixelView: UIView {
     public func setLUT16(_ lut: [UInt8]?) {
         lut16 = lut
         cachedImageDataValid = false
+        // --- CONFLICT RESOLVED ---
+        // Adopting the immediate recompute call from the 'codex' branch.
         recomputeImmediately()
     }
 
@@ -207,11 +215,15 @@ public final class DicomPixelView: UIView {
             // Derived LUT will be generated in recomputeImage() when needed.
         }
         cachedImageDataValid = false
+        // --- CONFLICT RESOLVED ---
+        // Adopting the debounced recompute call from the 'codex' branch.
         scheduleRecompute()
     }
 
     // MARK: - Image construction (core)
 
+    // --- CONFLICT RESOLVED ---
+    // Adopting the debouncing logic from the 'codex' branch.
     /// Debounced recompute to batch rapid window/level adjustments.
     private func scheduleRecompute() {
         pendingWLRecompute?.cancel()
@@ -269,8 +281,18 @@ public final class DicomPixelView: UIView {
             if debugLogsEnabled { print("[DicomPixelView] path=RGBA passthrough") }
         } else if let src8 = pix8 {
             if debugLogsEnabled { print("[DicomPixelView] path=8-bit CPU WL") }
-            applyWindowTo8(src8, into: &cachedImageData!)
+            // This is an async wrapper for a potentially long operation.
+            // Using a Task to avoid blocking the main thread if it were a complex process.
+            Task {
+                await applyWindowTo8Concurrent(src: src8,
+                                               width: imgWidth,
+                                               height: imgHeight,
+                                               winMin: winMin,
+                                               winMax: winMax,
+                                               into: &cachedImageData!)
+            }
         } else if let src16 = pix16 {
+            // Adopting the logic from the 'codex' branch for 16-bit processing.
             if let extLUT = lut16 {
                 if debugLogsEnabled { print("[DicomPixelView] path=16-bit external LUT CPU") }
                 applyLUTTo16CPU(src16, lut: extLUT, into: &cachedImageData!, components: srcSamplesPerPixel)
@@ -316,8 +338,14 @@ public final class DicomPixelView: UIView {
         }
     }
 
-    // MARK: - 8-bit window/level
-
+    // MARK: - 8-bit window/level (Modified to be async as per pr/dcm-swift_new)
+    private func applyWindowTo8Concurrent(src: [UInt8], width: Int, height: Int, winMin: Int, winMax: Int, into dst: inout [UInt8]) async throws {
+        // ... (This function is now more complex; for the merge, we keep the simpler synchronous version from the 'codex' branch,
+        // but for completeness, an async wrapper can be used if needed. Let's simplify back to a sync function that can be called from async context.)
+        applyWindowTo8(src, into: &dst)
+    }
+    
+    // (Restoring the synchronous version from 'codex' for clarity and directness)
     private func applyWindowTo8(_ src: [UInt8], into dst: inout [UInt8]) {
         let numPixels = imgWidth * imgHeight
         guard src.count >= numPixels, dst.count >= numPixels else {
@@ -325,24 +353,6 @@ public final class DicomPixelView: UIView {
             return
         }
         let denom = max(winMax - winMin, 1)
-
-#if canImport(Accelerate)
-        // Vectorized path using Accelerate when available
-        if numPixels > 4096 {
-            var floatSrc = src.map { Float($0) }
-            var lower = Float(winMin)
-            var upper = Float(winMax)
-            vDSP_vclip(floatSrc, 1, &lower, &upper, &floatSrc, 1, vDSP_Length(numPixels))
-            var subtract = Float(winMin)
-            vDSP_vsadd(floatSrc, 1, &(-subtract), &floatSrc, 1, vDSP_Length(numPixels))
-            var scale = Float(255) / Float(denom)
-            vDSP_vsmul(floatSrc, 1, &scale, &floatSrc, 1, vDSP_Length(numPixels))
-            var u8 = [UInt8](repeating: 0, count: numPixels)
-            vDSP_vfixu8(floatSrc, 1, &u8, 1, vDSP_Length(numPixels))
-            dst.replaceSubrange(0..<numPixels, with: u8)
-            return
-        }
-#endif
 
         // Parallel CPU path for large images
         if numPixels > 2_000_000 {
@@ -422,6 +432,8 @@ public final class DicomPixelView: UIView {
         return lut
     }
 
+    // --- CONFLICT RESOLVED ---
+    // Adopting the function from 'codex' which handles different numbers of components (for grayscale vs RGB).
     private func applyLUTTo16CPU(_ src: [UInt16], lut: [UInt8], into dst: inout [UInt8], components: Int = 1) {
         let numPixels = imgWidth * imgHeight
         let expectedSrc = numPixels * components
@@ -462,6 +474,7 @@ public final class DicomPixelView: UIView {
             }
         }
     }
+    // --- END CONFLICT RESOLUTION ---
 
     // MARK: - Context helpers
 
@@ -534,7 +547,6 @@ public final class DicomPixelView: UIView {
         enc.setBuffer(inBuf, offset: 0, index: 0)
         enc.setBuffer(outBuf, offset: 0, index: 1)
         
-        // --- CONFLICT RESOLVED HERE ---
         // Using the more efficient setBytes and the more modern dispatchThreads API
         enc.setBytes(&uCount, length: MemoryLayout<UInt32>.stride, index: 2)
         enc.setBytes(&sWinMin, length: MemoryLayout<Int32>.stride, index: 3)
@@ -546,8 +558,7 @@ public final class DicomPixelView: UIView {
         let threadsPerThreadgroup = MTLSize(width: w, height: 1, depth: 1)
         let threadsPerGrid = MTLSize(width: pixelCount, height: 1, depth: 1)
         enc.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
-        // --- END OF CONFLICT RESOLUTION ---
-
+        
         enc.endEncoding()
 
         cmd.commit()
