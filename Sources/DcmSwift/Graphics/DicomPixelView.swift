@@ -420,16 +420,38 @@ public final class DicomPixelView: UIView {
 
     /// Build a LUT derived from window/level (MONOCHROME2).
     private func buildDerivedLUT16(winMin: Int, winMax: Int) -> [UInt8] {
-        // Minimum size 65536; if more than 16 effective bits, clamp at 65536.
         let size = 65536
-        var lut = [UInt8](repeating: 0, count: size)
         let denom = max(winMax - winMin, 1)
-        // Generate clamped linear mapping.
+
+#if canImport(Accelerate)
+        var ramp = [Float](repeating: 0, count: size)
+        var start: Float = 0
+        var step: Float = 1
+        vDSP_vramp(&start, &step, &ramp, 1, vDSP_Length(size))
+
+        var fMin = Float(winMin)
+        var fMax = Float(winMax)
+        vDSP_vclip(ramp, 1, &fMin, &fMax, &ramp, 1, vDSP_Length(size))
+
+        var negMin = -fMin
+        vDSP_vsadd(ramp, 1, &negMin, &ramp, 1, vDSP_Length(size))
+
+        var scale = Float(255) / Float(denom)
+        vDSP_vsmul(ramp, 1, &scale, &ramp, 1, vDSP_Length(size))
+
+        var lut = [UInt8](repeating: 0, count: size)
+        lut.withUnsafeMutableBufferPointer { ptr in
+            vDSP_vfixu8(ramp, 1, ptr.baseAddress!, 1, vDSP_Length(size))
+        }
+        return lut
+#else
+        var lut = [UInt8](repeating: 0, count: size)
         for v in 0..<size {
             let c = min(max(v - winMin, 0), denom)
             lut[v] = UInt8(c * 255 / denom)
         }
         return lut
+#endif
     }
 
     // --- CONFLICT RESOLVED ---
@@ -443,6 +465,22 @@ public final class DicomPixelView: UIView {
             return
         }
 
+    #if canImport(Accelerate)
+        if components == 1 {
+            var indices = [Float](repeating: 0, count: numPixels)
+            vDSP.integerToFloatingPoint(src, result: &indices)
+            var lutF = [Float](repeating: 0, count: lut.count)
+            vDSP.integerToFloatingPoint(lut, result: &lutF)
+            var resultF = [Float](repeating: 0, count: numPixels)
+            vDSP_vlint(lutF, 1, indices, 1, &resultF, 1, vDSP_Length(numPixels), vDSP_Length(lut.count))
+            dst.withUnsafeMutableBufferPointer { outBuf in
+                vDSP_vfixu8(resultF, 1, outBuf.baseAddress!, 1, vDSP_Length(numPixels))
+            }
+            return
+        }
+    #endif
+
+        // General fallback: multi-channel manual LUT application
         src.withUnsafeBufferPointer { inBuf in
             lut.withUnsafeBufferPointer { lutBuf in
                 dst.withUnsafeMutableBufferPointer { outBuf in
@@ -460,6 +498,7 @@ public final class DicomPixelView: UIView {
             }
         }
     }
+
 
     private func applyWindowTo16GPU(_ src: [UInt16], srcSamples: Int, into dst: inout [UInt8]) -> Bool {
         let numPixels = imgWidth * imgHeight
