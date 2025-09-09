@@ -74,9 +74,6 @@ public final class DicomPixelView: UIView {
         imgHeight = height
         samplesPerPixel = 1
         setWindow(center: windowCenter, width: windowWidth)
-        cachedImageDataValid = false
-        recomputeImage()
-        setNeedsDisplay()
     }
 
     /// Set 16-bit pixels (grayscale) and apply window (or external LUT if provided).
@@ -89,9 +86,6 @@ public final class DicomPixelView: UIView {
         imgHeight = height
         samplesPerPixel = 1
         setWindow(center: windowCenter, width: windowWidth)
-        cachedImageDataValid = false
-        recomputeImage()
-        setNeedsDisplay()
     }
 
     /// Set 24-bit RGB or BGR pixels. Internally converted to RGBA (noneSkipLast) for fast drawing.
@@ -140,8 +134,10 @@ public final class DicomPixelView: UIView {
         samplesPerPixel = 4
         // Windowing does not apply for true color; preserve current WL but do not recompute mapping.
         cachedImageDataValid = false
-        recomputeImage()
-        setNeedsDisplay()
+        Task {
+            await self.recomputeImage()
+            self.setNeedsDisplay()
+        }
     }
 
     /// Adjust window/level explicitly.
@@ -154,8 +150,10 @@ public final class DicomPixelView: UIView {
     public func setLUT16(_ lut: [UInt8]?) {
         lut16 = lut
         cachedImageDataValid = false
-        recomputeImage()
-        setNeedsDisplay()
+        Task {
+            await self.recomputeImage()
+            self.setNeedsDisplay()
+        }
     }
 
     // MARK: - Drawing
@@ -191,13 +189,15 @@ public final class DicomPixelView: UIView {
             // Derived LUT will be generated in recomputeImage() when needed.
         }
         cachedImageDataValid = false
-        recomputeImage()
-        setNeedsDisplay()
+        Task {
+            await self.recomputeImage()
+            self.setNeedsDisplay()
+        }
     }
 
     // MARK: - Image construction (core)
 
-    private func recomputeImage() {
+    private func recomputeImage() async {
         let t0 = enablePerfMetrics ? CFAbsoluteTimeGetCurrent() : 0
         if debugLogsEnabled {
             print("[DicomPixelView] recomputeImage start size=\(imgWidth)x\(imgHeight) spp=\(samplesPerPixel) cacheValid=\(cachedImageDataValid)")
@@ -234,17 +234,38 @@ public final class DicomPixelView: UIView {
             if debugLogsEnabled { print("[DicomPixelView] path=RGBA passthrough") }
         } else if let src8 = pix8 {
             if debugLogsEnabled { print("[DicomPixelView] path=8-bit CPU WL") }
-            applyWindowTo8(src8, into: &cachedImageData!)
+            do {
+                try await applyWindowTo8Concurrent(src: src8,
+                                                   width: imgWidth,
+                                                   height: imgHeight,
+                                                   winMin: winMin,
+                                                   winMax: winMax,
+                                                   into: &cachedImageData!)
+            } catch {
+                print("[DicomPixelView] Error applying window: \(error)")
+            }
         } else if let src16 = pix16 {
-            if let extLUT = lut16 {
-                if debugLogsEnabled { print("[DicomPixelView] path=16-bit external LUT CPU") }
-                applyLUTTo16CPU(src16, lut: extLUT, into: &cachedImageData!)
-            } else if applyWindowTo16GPU(src16, into: &cachedImageData!) {
-                if debugLogsEnabled { print("[DicomPixelView] path=16-bit GPU WL") }
-            } else {
-                if debugLogsEnabled { print("[DicomPixelView] path=16-bit CPU LUT fallback") }
-                let lut = buildDerivedLUT16(winMin: winMin, winMax: winMax)
-                applyLUTTo16CPU(src16, lut: lut, into: &cachedImageData!)
+            do {
+                if let extLUT = lut16 {
+                    if debugLogsEnabled { print("[DicomPixelView] path=16-bit external LUT CPU") }
+                    try await applyLUTTo16Concurrent(src: src16,
+                                                     width: imgWidth,
+                                                     height: imgHeight,
+                                                     lut: extLUT,
+                                                     into: &cachedImageData!)
+                } else if applyWindowTo16GPU(src16, into: &cachedImageData!) {
+                    if debugLogsEnabled { print("[DicomPixelView] path=16-bit GPU WL") }
+                } else {
+                    if debugLogsEnabled { print("[DicomPixelView] path=16-bit CPU LUT fallback") }
+                    let lut = buildDerivedLUT16(winMin: winMin, winMax: winMax)
+                    try await applyLUTTo16Concurrent(src: src16,
+                                                     width: imgWidth,
+                                                     height: imgHeight,
+                                                     lut: lut,
+                                                     into: &cachedImageData!)
+                }
+            } catch {
+                print("[DicomPixelView] Error applying LUT: \(error)")
             }
         } else {
             // Nothing to do
@@ -281,96 +302,6 @@ public final class DicomPixelView: UIView {
         }
     }
 
-    // MARK: - 8-bit window/level
-
-    private func applyWindowTo8(_ src: [UInt8], into dst: inout [UInt8]) {
-        let numPixels = imgWidth * imgHeight
-        guard src.count >= numPixels, dst.count >= numPixels else {
-            print("[DicomPixelView] Error: pixel buffers too small. Expected \(numPixels), got src: \(src.count) dst: \(dst.count)")
-            return
-        }
-        let denom = max(winMax - winMin, 1)
-
-#if canImport(Accelerate)
-        // Vectorized path using Accelerate when available
-        if numPixels > 4096 {
-            var floatSrc = src.map { Float($0) }
-            var lower = Float(winMin)
-            var upper = Float(winMax)
-            vDSP_vclip(floatSrc, 1, &lower, &upper, &floatSrc, 1, vDSP_Length(numPixels))
-            var subtract = Float(winMin)
-            vDSP_vsadd(floatSrc, 1, &(-subtract), &floatSrc, 1, vDSP_Length(numPixels))
-            var scale = Float(255) / Float(denom)
-            vDSP_vsmul(floatSrc, 1, &scale, &floatSrc, 1, vDSP_Length(numPixels))
-            var u8 = [UInt8](repeating: 0, count: numPixels)
-            vDSP_vfixu8(floatSrc, 1, &u8, 1, vDSP_Length(numPixels))
-            dst.replaceSubrange(0..<numPixels, with: u8)
-            return
-        }
-#endif
-
-        // Parallel CPU path for large images
-        if numPixels > 2_000_000 {
-            let threads = max(1, ProcessInfo.processInfo.activeProcessorCount)
-            let chunkSize = (numPixels + threads - 1) / threads
-            src.withUnsafeBufferPointer { inBuf in
-                dst.withUnsafeMutableBufferPointer { outBuf in
-                    let inBase = inBuf.baseAddress!
-                    let outBase = outBuf.baseAddress!
-                    DispatchQueue.concurrentPerform(iterations: threads) { chunk in
-                        let start = chunk * chunkSize
-                        if start >= numPixels { return }
-                        let end = min(start + chunkSize, numPixels)
-                        var i = start
-                        let fastEnd = end & ~3
-                        while i < fastEnd {
-                            let v0 = Int(inBase[i]);    let c0 = min(max(v0 - winMin, 0), denom)
-                            let v1 = Int(inBase[i+1]);  let c1 = min(max(v1 - winMin, 0), denom)
-                            let v2 = Int(inBase[i+2]);  let c2 = min(max(v2 - winMin, 0), denom)
-                            let v3 = Int(inBase[i+3]);  let c3 = min(max(v3 - winMin, 0), denom)
-                            outBase[i]   = UInt8(c0 * 255 / denom)
-                            outBase[i+1] = UInt8(c1 * 255 / denom)
-                            outBase[i+2] = UInt8(c2 * 255 / denom)
-                            outBase[i+3] = UInt8(c3 * 255 / denom)
-                            i += 4
-                        }
-                        while i < end {
-                            let v = Int(inBase[i])
-                            let clamped = min(max(v - winMin, 0), denom)
-                            outBase[i] = UInt8(clamped * 255 / denom)
-                            i += 1
-                        }
-                    }
-                }
-            }
-        } else {
-            // Sequential path for small images
-            src.withUnsafeBufferPointer { inBuf in
-                dst.withUnsafeMutableBufferPointer { outBuf in
-                    var i = 0
-                    let end = numPixels & ~3
-                    while i < end {
-                        let v0 = Int(inBuf[i]);    let c0 = min(max(v0 - winMin, 0), denom)
-                        let v1 = Int(inBuf[i+1]);  let c1 = min(max(v1 - winMin, 0), denom)
-                        let v2 = Int(inBuf[i+2]);  let c2 = min(max(v2 - winMin, 0), denom)
-                        let v3 = Int(inBuf[i+3]);  let c3 = min(max(v3 - winMin, 0), denom)
-                        outBuf[i]   = UInt8(c0 * 255 / denom)
-                        outBuf[i+1] = UInt8(c1 * 255 / denom)
-                        outBuf[i+2] = UInt8(c2 * 255 / denom)
-                        outBuf[i+3] = UInt8(c3 * 255 / denom)
-                        i += 4
-                    }
-                    while i < numPixels {
-                        let v = Int(inBuf[i])
-                        let clamped = min(max(v - winMin, 0), denom)
-                        outBuf[i] = UInt8(clamped * 255 / denom)
-                        i += 1
-                    }
-                }
-            }
-        }
-    }
-
     // MARK: - 16-bit window/level
 
     /// Build a LUT derived from window/level (MONOCHROME2).
@@ -385,68 +316,6 @@ public final class DicomPixelView: UIView {
             lut[v] = UInt8(c * 255 / denom)
         }
         return lut
-    }
-
-    private func applyLUTTo16CPU(_ src: [UInt16], lut: [UInt8], into dst: inout [UInt8]) {
-        let numPixels = imgWidth * imgHeight
-        guard src.count >= numPixels, dst.count >= numPixels, lut.count >= 65536 else {
-            print("[DicomPixelView] Error: buffer sizes invalid. Pixels expected \(numPixels), got src \(src.count) dst \(dst.count); LUT \(lut.count)")
-            return
-        }
-
-        // Parallel CPU for large images
-        if numPixels > 2_000_000 {
-            let threads = max(1, ProcessInfo.processInfo.activeProcessorCount)
-            let chunkSize = (numPixels + threads - 1) / threads
-            src.withUnsafeBufferPointer { inBuf in
-                lut.withUnsafeBufferPointer { lutBuf in
-                    dst.withUnsafeMutableBufferPointer { outBuf in
-                        let inBase = inBuf.baseAddress!
-                        let lutBase = lutBuf.baseAddress!
-                        let outBase = outBuf.baseAddress!
-                        DispatchQueue.concurrentPerform(iterations: threads) { chunk in
-                            let start = chunk * chunkSize
-                            if start >= numPixels { return }
-                            let end = min(start + chunkSize, numPixels)
-                            var i = start
-                            let fastEnd = end & ~3
-                            while i < fastEnd {
-                                outBase[i]   = lutBase[Int(inBase[i])]
-                                outBase[i+1] = lutBase[Int(inBase[i+1])]
-                                outBase[i+2] = lutBase[Int(inBase[i+2])]
-                                outBase[i+3] = lutBase[Int(inBase[i+3])]
-                                i += 4
-                            }
-                            while i < end {
-                                outBase[i] = lutBase[Int(inBase[i])]
-                                i += 1
-                            }
-                        }
-                    }
-                }
-            }
-        } else {
-            // Sequential path for small images
-            src.withUnsafeBufferPointer { inBuf in
-                lut.withUnsafeBufferPointer { lutBuf in
-                    dst.withUnsafeMutableBufferPointer { outBuf in
-                        var i = 0
-                        let end = numPixels & ~3
-                        while i < end {
-                            outBuf[i]   = lutBuf[Int(inBuf[i])]
-                            outBuf[i+1] = lutBuf[Int(inBuf[i+1])]
-                            outBuf[i+2] = lutBuf[Int(inBuf[i+2])]
-                            outBuf[i+3] = lutBuf[Int(inBuf[i+3])]
-                            i += 4
-                        }
-                        while i < numPixels {
-                            outBuf[i] = lutBuf[Int(inBuf[i])]
-                            i += 1
-                        }
-                    }
-                }
-            }
-        }
     }
 
     private func applyWindowTo16GPU(_ src: [UInt16], into dst: inout [UInt8]) -> Bool {
