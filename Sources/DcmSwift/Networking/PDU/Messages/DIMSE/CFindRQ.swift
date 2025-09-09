@@ -156,36 +156,23 @@ public class CFindRQ: DataTF {
             Logger.debug("C-FIND: Query first bytes: \(preview)")
         }
 
-        // 5. Build PDU with one or two PDVs
+        // 5. Build P-DATA-TF payload containing command and optional dataset PDVs
         var pduPayload = Data()
 
-        // 5.1 Command PDV
-        var commandPDV = Data()
-        let commandMessageHeader: UInt8 = 0b00000011 // Command, and always Last fragment for command part
-        commandPDV.append(uint8: pcID, bigEndian: true)
-        commandPDV.append(commandMessageHeader)
-        
-        // Debug: Check commandData before appending
-        Logger.debug("C-FIND: About to append commandData of \(commandData.count) bytes")
-        Logger.debug("C-FIND: commandData first 12 bytes BEFORE append: \(commandData.prefix(12).map { String(format: "%02X", $0) }.joined(separator: " "))")
-        
-        commandPDV.append(commandData)
-        
-        // Debug: Check commandPDV after appending
-        Logger.debug("C-FIND: commandPDV after append (first 16 bytes): \(commandPDV.prefix(16).map { String(format: "%02X", $0) }.joined(separator: " "))")
-        
-        pduPayload.append(uint32: UInt32(commandPDV.count), bigEndian: true)
-        pduPayload.append(commandPDV)
+        // Command PDV (command flag set, last fragment)
+        let commandHeader: UInt8 = 0x03
+        pduPayload.append(uint32: UInt32(commandData.count + 2), bigEndian: true)
+        pduPayload.append(uint8: pcID, bigEndian: true)
+        pduPayload.append(commandHeader)
+        pduPayload.append(commandData)
 
-        // 5.2 DataSet PDV (if any)
+        // Dataset PDV (if any) with last fragment flag and command flag cleared
         if let data = datasetData {
-            var dataPDV = Data()
-            let dataMessageHeader: UInt8 = 0b00000010 // Last fragment only
-            dataPDV.append(uint8: pcID, bigEndian: true)
-            dataPDV.append(dataMessageHeader)
-            dataPDV.append(data)
-            pduPayload.append(uint32: UInt32(dataPDV.count), bigEndian: true)
-            pduPayload.append(dataPDV)
+            let dataHeader: UInt8 = 0x02
+            pduPayload.append(uint32: UInt32(data.count + 2), bigEndian: true)
+            pduPayload.append(uint8: pcID, bigEndian: true)
+            pduPayload.append(dataHeader)
+            pduPayload.append(data)
         }
 
         Logger.info("C-FIND using PCID=\(pcID) AS=\(abstractSyntax) cmdLen=\(commandData.count) dsLen=\(datasetData?.count ?? 0)")
@@ -195,19 +182,8 @@ public class CFindRQ: DataTF {
         pdu.append(uint8: PDUType.dataTF.rawValue, bigEndian: true)
         pdu.append(byte: 0x00)
         pdu.append(uint32: UInt32(pduPayload.count), bigEndian: true)
-        
-        // Debug: Check pduPayload before final append
-        Logger.debug("C-FIND: pduPayload first 20 bytes: \(pduPayload.prefix(20).map { String(format: "%02X", $0) }.joined(separator: " "))")
-        
         pdu.append(pduPayload)
-        
-        // Debug: Check final PDU
-        Logger.debug("C-FIND: Final PDU first 30 bytes: \(pdu.prefix(30).map { String(format: "%02X", $0) }.joined(separator: " "))")
-        
-        // CRITICAL DEBUG: Log the exact data being returned
-        Logger.debug("C-FIND: !!!! RETURNING PDU of \(pdu.count) bytes")
-        Logger.debug("C-FIND: !!!! First 40 bytes being returned: \(pdu.prefix(40).map { String(format: "%02X", $0) }.joined(separator: " "))")
-        
+
         return pdu
     }
 
