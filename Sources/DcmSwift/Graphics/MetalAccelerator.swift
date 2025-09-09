@@ -38,7 +38,10 @@ public final class MetalAccelerator {
         }
         device = dev
         commandQueue = dev.makeCommandQueue()
+        
+        // --- INÍCIO DA RESOLUÇÃO DO CONFLITO ---
         commandQueue?.maxCommandBufferCount = 3 // allow a few in-flight buffers
+        // --- FIM DA RESOLUÇÃO DO CONFLITO ---
 
         // Load the module's compiled metallib. Prefer the modern API that understands SPM bundles.
         var lib: MTLLibrary? = nil

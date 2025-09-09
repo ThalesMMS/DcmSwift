@@ -131,54 +131,67 @@ public class CFindRSP: DataTF {
         // if the PDU message is complete, and commandDataSetType indicates presence of dataset
         if commandDataSetType == 0 {
             Logger.debug("C-FIND-RSP: Processing complete message with dataset")
+            Logger.debug("C-FIND-RSP: Stream has \(stream.readableBytes) readable bytes")
             
-            // read data PDV length
-            guard let dataPDVLength = stream.read(length: 4)?.toInt32(byteOrder: .BigEndian) else {
-                Logger.error("Cannot read data PDV Length (CFindRSP)")
-                return .Refused
+            var datasetData: Data?
+            
+            // Check if there's enough data for another PDV
+            if stream.readableBytes >= 6 { // Minimum: 4 bytes length + 1 byte context + 1 byte flags
+                // read data PDV length
+                guard let dataPDVLength = stream.read(length: 4)?.toInt32(byteOrder: .BigEndian) else {
+                    Logger.error("Cannot read data PDV Length for fragmented message (CFindRSP)")
+                    return .Refused
+                }
+                
+                Logger.debug("C-FIND-RSP: Data PDV length: \(dataPDVLength)")
+                
+                // Validate PDV length
+                guard dataPDVLength > 2 && dataPDVLength < 1024 * 1024 * 10 else { // Max 10MB PDV
+                    Logger.error("Invalid PDV length: \(dataPDVLength)")
+                    return .Refused
+                }
+                            
+                // jump context + flags
+                stream.forward(by: 2)
+                
+                // read dataset data
+                datasetData = stream.read(length: Int(dataPDVLength - 2))
+                if datasetData == nil {
+                    Logger.error("Cannot read dataset data")
+                    return .Refused
+                }
+            } else {
+                // No more PDVs in this P-DATA-TF, dataset might come in next message
+                Logger.debug("C-FIND-RSP: No data PDV in this message, waiting for next P-DATA-TF")
+                return status
             }
             
-            Logger.debug("C-FIND-RSP: Data PDV length: \(dataPDVLength)")
-            
-            // Validate PDV length
-            guard dataPDVLength > 2 && dataPDVLength < 1024 * 1024 * 10 else { // Max 10MB PDV
-                Logger.error("Invalid PDV length: \(dataPDVLength)")
-                return .Refused
-            }
+            if let datasetData = datasetData {
+                Logger.debug("C-FIND-RSP: Read \(datasetData.count) bytes of dataset data")
+                
+                let dis = DicomInputStream(data: datasetData)
+                
+                dis.vrMethod    = transferSyntax!.vrMethod
+                dis.byteOrder   = transferSyntax!.byteOrder
+                
+                if commandField == .C_FIND_RSP {
+                    if let resultDataset = try? dis.readDataset() {
+                        resultsDataset = resultDataset
+                        Logger.info("C-FIND-RSP: Successfully parsed result dataset with \(resultDataset.allElements.count) elements")
                         
-            // jump context + flags
-            stream.forward(by: 2)
-            
-            // read dataset data
-            guard let datasetData = stream.read(length: Int(dataPDVLength - 2)) else {
-                Logger.error("Cannot read dataset data")
-                return .Refused
-            }
-            
-            Logger.debug("C-FIND-RSP: Read \(datasetData.count) bytes of dataset data")
-            
-            let dis = DicomInputStream(data: datasetData)
-            
-            dis.vrMethod    = transferSyntax!.vrMethod
-            dis.byteOrder   = transferSyntax!.byteOrder
-            
-            if commandField == .C_FIND_RSP {
-                if let resultDataset = try? dis.readDataset() {
-                    resultsDataset = resultDataset
-                    Logger.info("C-FIND-RSP: Successfully parsed result dataset with \(resultDataset.allElements.count) elements")
-                    
-                    // Log key fields if present
-                    if let patientName = resultDataset.string(forTag: "PatientName") {
-                        Logger.debug("C-FIND-RSP: PatientName: \(patientName)")
+                        // Log key fields if present
+                        if let patientName = resultDataset.string(forTag: "PatientName") {
+                            Logger.debug("C-FIND-RSP: PatientName: \(patientName)")
+                        }
+                        if let studyUID = resultDataset.string(forTag: "StudyInstanceUID") {
+                            Logger.debug("C-FIND-RSP: StudyInstanceUID: \(studyUID)")
+                        }
+                        if let modality = resultDataset.string(forTag: "Modality") {
+                            Logger.debug("C-FIND-RSP: Modality: \(modality)")
+                        }
+                    } else {
+                        Logger.warning("C-FIND-RSP: Failed to parse result dataset")
                     }
-                    if let studyUID = resultDataset.string(forTag: "StudyInstanceUID") {
-                        Logger.debug("C-FIND-RSP: StudyInstanceUID: \(studyUID)")
-                    }
-                    if let modality = resultDataset.string(forTag: "Modality") {
-                        Logger.debug("C-FIND-RSP: Modality: \(modality)")
-                    }
-                } else {
-                    Logger.warning("C-FIND-RSP: Failed to parse result dataset")
                 }
             }
         } else {

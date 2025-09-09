@@ -33,7 +33,8 @@ public class DicomEntity : Codable, CustomStringConvertible {
         var data = self.title.data(using: .utf8)
         
         if data!.count < 16 {
-            data!.append(Data(repeating: 0x00, count: 16-data!.count))
+            // AE titles must be padded with SPACE (0x20), not NULL (0x00)
+            data!.append(Data(repeating: 0x20, count: 16-data!.count))
         }
         
         return data

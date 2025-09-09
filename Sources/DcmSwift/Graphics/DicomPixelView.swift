@@ -297,10 +297,10 @@ public final class DicomPixelView: UIView {
                         var i = start
                         let fastEnd = end & ~3
                         while i < fastEnd {
-                            let v0 = Int(inBase[i]);     let c0 = min(max(v0 - winMin, 0), denom)
-                            let v1 = Int(inBase[i+1]);   let c1 = min(max(v1 - winMin, 0), denom)
-                            let v2 = Int(inBase[i+2]);   let c2 = min(max(v2 - winMin, 0), denom)
-                            let v3 = Int(inBase[i+3]);   let c3 = min(max(v3 - winMin, 0), denom)
+                            let v0 = Int(inBase[i]);    let c0 = min(max(v0 - winMin, 0), denom)
+                            let v1 = Int(inBase[i+1]);  let c1 = min(max(v1 - winMin, 0), denom)
+                            let v2 = Int(inBase[i+2]);  let c2 = min(max(v2 - winMin, 0), denom)
+                            let v3 = Int(inBase[i+3]);  let c3 = min(max(v3 - winMin, 0), denom)
                             outBase[i]   = UInt8(c0 * 255 / denom)
                             outBase[i+1] = UInt8(c1 * 255 / denom)
                             outBase[i+2] = UInt8(c2 * 255 / denom)
@@ -323,10 +323,10 @@ public final class DicomPixelView: UIView {
                     var i = 0
                     let end = numPixels & ~3
                     while i < end {
-                        let v0 = Int(inBuf[i]);     let c0 = min(max(v0 - winMin, 0), denom)
-                        let v1 = Int(inBuf[i+1]);   let c1 = min(max(v1 - winMin, 0), denom)
-                        let v2 = Int(inBuf[i+2]);   let c2 = min(max(v2 - winMin, 0), denom)
-                        let v3 = Int(inBuf[i+3]);   let c3 = min(max(v3 - winMin, 0), denom)
+                        let v0 = Int(inBuf[i]);    let c0 = min(max(v0 - winMin, 0), denom)
+                        let v1 = Int(inBuf[i+1]);  let c1 = min(max(v1 - winMin, 0), denom)
+                        let v2 = Int(inBuf[i+2]);  let c2 = min(max(v2 - winMin, 0), denom)
+                        let v3 = Int(inBuf[i+3]);  let c3 = min(max(v3 - winMin, 0), denom)
                         outBuf[i]   = UInt8(c0 * 255 / denom)
                         outBuf[i+1] = UInt8(c1 * 255 / denom)
                         outBuf[i+2] = UInt8(c2 * 255 / denom)
@@ -492,9 +492,9 @@ public final class DicomPixelView: UIView {
                                             options: .storageModeShared,
                                             deallocator: nil),
               let outBuf = device.makeBuffer(bytesNoCopy: UnsafeMutableRawPointer(outputPixels),
-                                            length: outLen,
-                                            options: .storageModeShared,
-                                            deallocator: nil)
+                                             length: outLen,
+                                             options: .storageModeShared,
+                                             deallocator: nil)
         else { return false }
 
         var uCount = UInt32(pixelCount)
@@ -508,6 +508,9 @@ public final class DicomPixelView: UIView {
         enc.setComputePipelineState(pso)
         enc.setBuffer(inBuf, offset: 0, index: 0)
         enc.setBuffer(outBuf, offset: 0, index: 1)
+        
+        // --- CONFLICT RESOLVED HERE ---
+        // Using the more efficient setBytes and the more modern dispatchThreads API
         enc.setBytes(&uCount, length: MemoryLayout<UInt32>.stride, index: 2)
         enc.setBytes(&sWinMin, length: MemoryLayout<Int32>.stride, index: 3)
         enc.setBytes(&uDenom, length: MemoryLayout<UInt32>.stride, index: 4)
@@ -517,6 +520,8 @@ public final class DicomPixelView: UIView {
         let threadsPerThreadgroup = MTLSize(width: w, height: 1, depth: 1)
         let threadsPerGrid = MTLSize(width: pixelCount, height: 1, depth: 1)
         enc.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
+        // --- END OF CONFLICT RESOLUTION ---
+
         enc.endEncoding()
 
         cmd.commit()

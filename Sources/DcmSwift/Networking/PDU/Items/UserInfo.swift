@@ -70,23 +70,42 @@ public class UserInfo {
     
     public func data() -> Data {
         var data = Data()
+        var itemsData = Data()
         
-        // Max PDU length item
-        var pduData = Data()
-        var itemLength = UInt16(4).bigEndian
+        // Max PDU length item (required)
         var pduLength = UInt32(self.maxPDULength).bigEndian
-        pduData.append(Data(repeating: ItemType.maxPduLength.rawValue, count: 1)) // 51H (Max PDU Length)
-        pduData.append(Data(repeating: 0x00, count: 1)) // 00H
-        pduData.append(UnsafeBufferPointer(start: &itemLength, count: 1)) // Length
-        pduData.append(UnsafeBufferPointer(start: &pduLength, count: 1)) // PDU Length
+        itemsData.append(Data(repeating: ItemType.maxPduLength.rawValue, count: 1)) // 51H
+        itemsData.append(Data(repeating: 0x00, count: 1)) // Reserved
+        itemsData.append(uint16: UInt16(4), bigEndian: true) // Item length
+        itemsData.append(UnsafeBufferPointer(start: &pduLength, count: 1)) // PDU Length value
         
-        // TODO: Application UID and version
-        // Items
-        var length = UInt16(pduData.count).bigEndian
+        // Implementation Class UID item (required by many PACS)
+        if !implementationUID.isEmpty {
+            let uidData = implementationUID.data(using: .ascii) ?? Data()
+            itemsData.append(Data(repeating: ItemType.implClassUID.rawValue, count: 1)) // 52H
+            itemsData.append(Data(repeating: 0x00, count: 1)) // Reserved
+            itemsData.append(uint16: UInt16(uidData.count), bigEndian: true) // Item length
+            itemsData.append(uidData) // UID value
+        }
+        
+        // Implementation Version Name item (optional but recommended)
+        if !implementationVersion.isEmpty {
+            var versionData = implementationVersion.data(using: .ascii) ?? Data()
+            // Pad to even length if needed
+            if versionData.count % 2 != 0 {
+                versionData.append(0x20) // Space padding
+            }
+            itemsData.append(Data(repeating: ItemType.implVersionName.rawValue, count: 1)) // 55H
+            itemsData.append(Data(repeating: 0x00, count: 1)) // Reserved
+            itemsData.append(uint16: UInt16(versionData.count), bigEndian: true) // Item length
+            itemsData.append(versionData) // Version value
+        }
+        
+        // Build complete User Information item
         data.append(Data(repeating: ItemType.userInfo.rawValue, count: 1)) // 50H
-        data.append(Data(repeating: 0x00, count: 1)) // 00H
-        data.append(UnsafeBufferPointer(start: &length, count: 1)) // Length
-        data.append(pduData) // Items
+        data.append(Data(repeating: 0x00, count: 1)) // Reserved
+        data.append(uint16: UInt16(itemsData.count), bigEndian: true) // Total items length
+        data.append(itemsData) // All sub-items
         
         return data
     }

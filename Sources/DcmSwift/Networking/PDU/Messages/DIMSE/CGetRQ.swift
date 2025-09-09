@@ -47,18 +47,22 @@ public class CGetRQ: DataTF {
         let commandDataset = DataSet()
         _ = commandDataset.set(value: CommandField.C_GET_RQ.rawValue, forTagName: "CommandField")
         _ = commandDataset.set(value: abstractSyntax, forTagName: "AffectedSOPClassUID")
-        _ = commandDataset.set(value: UInt16(1), forTagName: "MessageID")
+        _ = commandDataset.set(value: self.messageID, forTagName: "MessageID")
         _ = commandDataset.set(value: UInt16(0), forTagName: "Priority") // MEDIUM
 
         if hasDataset {
-            _ = commandDataset.set(value: UInt16(0x0001), forTagName: "CommandDataSetType")
+            // 0x0101 indicates that a dataset follows
+            _ = commandDataset.set(value: UInt16(0x0101), forTagName: "CommandDataSetType")
         } else {
             _ = commandDataset.set(value: UInt16(0x0102), forTagName: "CommandDataSetType")
         }
-        
-        // 4. Serialize the command dataset
+
+        // Insert placeholder for CommandGroupLength at the beginning
+        _ = commandDataset.set(value: UInt32(0), forTagName: "CommandGroupLength")
+
+        // Compute actual group length excluding the CommandGroupLength element itself (12 bytes)
         var commandData = commandDataset.toData(transferSyntax: commandTransferSyntax)
-        let commandLength = commandData.count
+        let commandLength = commandData.count - 12
         _ = commandDataset.set(value: UInt32(commandLength), forTagName: "CommandGroupLength")
         commandData = commandDataset.toData(transferSyntax: commandTransferSyntax)
         
