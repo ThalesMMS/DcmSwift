@@ -72,7 +72,9 @@ public class CFindRQ: DataTF {
         // 3. Prepare Data Dataset (if any)
         var datasetData: Data? = nil
         if let qrDataset = self.queryDataset, qrDataset.allElements.count > 0 {
-            _ = commandDataset.set(value: UInt16(0x0101), forTagName: "CommandDataSetType") // DataSet follows
+            // Per DICOM PS 3.7, CommandDataSetType = 0x0101 means NO Data Set present.
+            // Any other value (typically 0x0000) indicates a Data Set follows.
+            _ = commandDataset.set(value: UInt16(0x0000), forTagName: "CommandDataSetType") // DataSet follows
             guard let dataTS_UID = association.acceptedPresentationContexts[pcID]?.transferSyntaxes.first,
                   let dataTransferSyntax = TransferSyntax(dataTS_UID) else {
                 Logger.error("C-FIND: Could not find an accepted transfer syntax for PC ID \(pcID)")
@@ -95,7 +97,7 @@ public class CFindRQ: DataTF {
             
             datasetData = qrDataset.toData(transferSyntax: dataTransferSyntax)
         } else {
-            _ = commandDataset.set(value: UInt16(0x0102), forTagName: "CommandDataSetType") // No DataSet
+            _ = commandDataset.set(value: UInt16(0x0101), forTagName: "CommandDataSetType") // No DataSet
         }
 
         // Log the command dataset before serialization
@@ -107,7 +109,8 @@ public class CFindRQ: DataTF {
             } else if element.name == "Priority", let prio = element.value as? UInt16 {
                 valueStr = "\(prio) [\(prio == 0 ? "MEDIUM" : prio == 1 ? "HIGH" : "LOW")]"
             } else if element.name == "CommandDataSetType", let dsType = element.value as? UInt16 {
-                valueStr = "\(dsType) [\(dsType == 0x0101 ? "HAS_DATASET" : dsType == 0x0102 ? "NO_DATASET" : "UNKNOWN")]"
+                // 0x0101 => No DataSet present; anything else (e.g., 0x0000) => DataSet follows
+                valueStr = "\(dsType) [\(dsType == 0x0101 ? "NO_DATASET" : "HAS_DATASET")]"
             } else {
                 valueStr = element.value != nil ? "\(element.value)" : "<empty>"
             }
@@ -156,52 +159,41 @@ public class CFindRQ: DataTF {
             Logger.debug("C-FIND: Query first bytes: \(preview)")
         }
 
-        // 5. Build command P-DATA-TF PDU
-        var commandPduPayload = Data()
-        let commandHeader: UInt8 = 0x03
-        commandPduPayload.append(uint32: UInt32(commandData.count + 2), bigEndian: true)
-        commandPduPayload.append(uint8: pcID, bigEndian: true)
-        commandPduPayload.append(commandHeader)
-        commandPduPayload.append(commandData)
+        // 5. Build a single P-DATA-TF PDU containing both Command PDV and (if present) Data PDV
+        var pduPayload = Data()
+        // Command PDV
+        var cmdPDV = Data()
+        let cmdHeader: UInt8 = 0x03 // Command + Last fragment
+        cmdPDV.append(uint8: pcID, bigEndian: true)
+        cmdPDV.append(cmdHeader)
+        cmdPDV.append(commandData)
+        pduPayload.append(uint32: UInt32(cmdPDV.count), bigEndian: true)
+        pduPayload.append(cmdPDV)
+
+        // Data PDV (if any)
+        if let data = datasetData {
+            var dataPDV = Data()
+            let dataHeader: UInt8 = 0x02 // Last fragment only
+            dataPDV.append(uint8: pcID, bigEndian: true)
+            dataPDV.append(dataHeader)
+            dataPDV.append(data)
+            pduPayload.append(uint32: UInt32(dataPDV.count), bigEndian: true)
+            pduPayload.append(dataPDV)
+        }
 
         Logger.info("C-FIND using PCID=\(pcID) AS=\(abstractSyntax) cmdLen=\(commandData.count) dsLen=\(datasetData?.count ?? 0)")
 
-        // 6. Build command P-DATA-TF PDU
         var pdu = Data()
         pdu.append(uint8: PDUType.dataTF.rawValue, bigEndian: true)
         pdu.append(byte: 0x00)
-        pdu.append(uint32: UInt32(commandPduPayload.count), bigEndian: true)
-        pdu.append(commandPduPayload)
-        
-        // Store dataset for separate PDU if present
-        self.separateDatasetPDU = nil
-        if let data = datasetData {
-            var dataPduPayload = Data()
-            let dataHeader: UInt8 = 0x02
-            dataPduPayload.append(uint32: UInt32(data.count + 2), bigEndian: true)
-            dataPduPayload.append(uint8: pcID, bigEndian: true)
-            dataPduPayload.append(dataHeader)
-            dataPduPayload.append(data)
-            
-            var dataPdu = Data()
-            dataPdu.append(uint8: PDUType.dataTF.rawValue, bigEndian: true)
-            dataPdu.append(byte: 0x00)
-            dataPdu.append(uint32: UInt32(dataPduPayload.count), bigEndian: true)
-            dataPdu.append(dataPduPayload)
-            
-            self.separateDatasetPDU = dataPdu
-        }
+        pdu.append(uint32: UInt32(pduPayload.count), bigEndian: true)
+        pdu.append(pduPayload)
 
         return pdu
     }
     
-    private var separateDatasetPDU: Data?
-
     public override func messagesData() -> [Data] {
-        // Return the dataset PDU separately if present
-        if let dataPdu = separateDatasetPDU {
-            return [dataPdu]
-        }
+        // Command and Query Dataset are now sent together in a single PDU
         return []
     }
     
