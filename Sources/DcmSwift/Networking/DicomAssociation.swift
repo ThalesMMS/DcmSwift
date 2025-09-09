@@ -240,7 +240,12 @@ public class DicomAssociation: ChannelInboundHandler {
         let bytes = buffer.readBytes(length: buffer.readableBytes)
         let pduData = Data(bytes!)
         
-        //print("channelRead")
+        Logger.debug("DicomAssociation.channelRead: Received \(pduData.count) bytes from network in state \(state)")
+        if pduData.count < 20 {
+            // Log small PDUs which might be incomplete
+            let hexBytes = pduData.map { String(format: "%02X", $0) }.joined(separator: " ")
+            Logger.warning("DicomAssociation.channelRead: Received small PDU (\(pduData.count) bytes): \(hexBytes)")
+        }
         
         switch state {
         case .Sta2:
@@ -269,6 +274,13 @@ public class DicomAssociation: ChannelInboundHandler {
                     self.acceptedTransferSyntax = transferSyntax
                 }
                 
+                // Log accepted presentation contexts for diagnostics
+                for (ctxID, pc) in self.acceptedPresentationContexts {
+                    let asuid = pc.abstractSyntax ?? "(nil)"
+                    let ts = pc.transferSyntaxes.joined(separator: ", ")
+                    Logger.info("ACCEPTED PC id=\(ctxID) AS=\(asuid) TS=[\(ts)]", "Association")
+                }
+                
                 log(message: message, write: false)
                 
                 _ = try? handle(event: .AE3(message))
@@ -286,6 +298,45 @@ public class DicomAssociation: ChannelInboundHandler {
                 _ = try? handle(event: .AR3(message))
             }
         case .Sta6:
+            // Check PDU type first to handle non-DATA-TF PDUs properly
+            if pduData.count > 0 {
+                let pduType = pduData[0]
+                
+                // A-ABORT PDU (0x07)
+                if pduType == 0x07 {
+                    Logger.error("Received A-ABORT PDU in state Sta6")
+                    if let message = PDUDecoder.receiveAssocMessage(
+                        data: pduData,
+                        pduType: .abort,
+                        association: self
+                    ) as? Abort {
+                        log(message: message, write: false)
+                        _ = try? handle(event: .AA3)
+                    }
+                    return
+                }
+                
+                // A-RELEASE-RQ PDU (0x05)
+                if pduType == 0x05 {
+                    Logger.warning("Received A-RELEASE-RQ PDU in state Sta6")
+                    if let message = PDUDecoder.receiveAssocMessage(
+                        data: pduData,
+                        pduType: .releaseRQ,
+                        association: self
+                    ) as? ReleaseRQ {
+                        log(message: message, write: false)
+                        _ = try? handle(event: .AR2(message))
+                    }
+                    return
+                }
+                
+                // If not DATA-TF (0x04), log unexpected PDU
+                if pduType != 0x04 {
+                    Logger.error("Unexpected PDU type \(String(format: "0x%02X", pduType)) in state Sta6")
+                    return
+                }
+            }
+            
             if origin == .Requestor {
                 switch self.serviceClassUsers {
                 case is CEchoSCU:
@@ -302,6 +353,7 @@ public class DicomAssociation: ChannelInboundHandler {
                     if let message = PDUDecoder.receiveDIMSEMessage(
                         data: pduData,
                         pduType: .dataTF,
+                        commandField: .C_FIND_RSP,
                         association: self
                     ) as? CFindRSP {
                         log(message: message, write: false)
@@ -423,7 +475,7 @@ public class DicomAssociation: ChannelInboundHandler {
             self.channel = context.channel
             
             // add channel handlers to decode messages for this child association
-            _ = self.channel?.pipeline.addHandlers([ByteToMessageHandler(PDUBytesDecoder(withAssociation: self)), self])
+            _ = self.channel?.pipeline.addHandlers([ByteToMessageHandler(PDUBytesDecoder()), self])
             
             // store a reference of the connected association
             self.connectedAssociations[ObjectIdentifier(context.channel)] = self
@@ -465,11 +517,11 @@ public class DicomAssociation: ChannelInboundHandler {
 
     public func disconnect() -> EventLoopFuture<Void> {
         if .Sta1 != self.state {
-            return self.group.next().makeFailedFuture(NetworkError.notReady)
+            return self.group.next().makeFailedFuture(DicomNetworkError.channelNotReady)
         }
         
         guard let channel = self.channel else {
-            return self.group.next().makeFailedFuture(NetworkError.notReady)
+            return self.group.next().makeFailedFuture(DicomNetworkError.channelNotReady)
         }
         
         self.state = .Sta13
@@ -603,7 +655,7 @@ public class DicomAssociation: ChannelInboundHandler {
             .channelOption(ChannelOptions.maxMessagesPerRead, value: 10)
             .channelInitializer { channel in
                 channel.pipeline.addHandlers([
-                    ByteToMessageHandler(PDUBytesDecoder(withAssociation: self)),
+                    ByteToMessageHandler(PDUBytesDecoder()),
                     self
                 ])
             }
@@ -825,13 +877,26 @@ public class DicomAssociation: ChannelInboundHandler {
     internal func write(message:PDUMessage, promise: EventLoopPromise<Void>) -> EventLoopFuture<Void> {
         log(message: message, write: true)
         
-        guard var data = message.data() else {
-            Logger.error("Cannot encode message of type `\(message.pduType!)`")
-            return channel!.eventLoop.makeFailedFuture(NetworkError.internalError)
+        guard let data = message.data() else {
+            let messageType = (message.messageName != nil) ? message.messageName() : String(describing: type(of: message))
+            Logger.error("Cannot encode message of type `\(messageType)`")
+            return channel!.eventLoop.makeFailedFuture(DicomNetworkError.pduEncodingFailed(messageType: messageType))
         }
         
-        for d in message.messagesData() {
-            data.append(d)
+        // CRITICAL DEBUG: Check data immediately after calling message.data()
+        if message.pduType == .dataTF && message.commandField == .C_FIND_RQ {
+            Logger.debug("!!!! DicomAssociation: Received \(data.count) bytes from message.data()")
+            Logger.debug("!!!! DicomAssociation: First 40 bytes: \(data.prefix(40).map { String(format: "%02X", $0) }.joined(separator: " "))")
+        }
+
+        // Debug: dump raw bytes for C-FIND-RQ right before writing
+        if message.pduType == .dataTF && message.commandField == .C_FIND_RQ {
+            Logger.debug("\n--- BEGIN C-FIND-RQ RAW DATA ---\n" +
+                         "PDU Type: \(message.pduType)\n" +
+                         "Message Name: \(message.messageName())\n" +
+                         "Total Length: \(data.count) bytes\n" +
+                         "Hex Data:\n\(data.toHex(spacing: 4))\n" +
+                         "--- END C-FIND-RQ RAW DATA ---")
         }
                 
         return write(data, promise: promise)

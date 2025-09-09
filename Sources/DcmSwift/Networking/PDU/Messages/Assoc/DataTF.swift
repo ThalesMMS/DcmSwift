@@ -89,7 +89,7 @@ public class DataTF: PDUMessage {
             
             self.commandField = commandField
             
-            guard let commandDataSetType = commandDataset.integer16(forTag: "CommandDataSetType")?.bigEndian else {
+            guard let commandDataSetType = commandDataset.integer16(forTag: "CommandDataSetType") else {
                 Logger.error("Cannot read Command Data Set Type")
                 return .Refused
             }

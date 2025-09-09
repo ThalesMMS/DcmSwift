@@ -28,9 +28,9 @@ public final class DicomTool {
 
     // MARK: - Decoding
 
-    /// Decode a DICOM file and display it in the provided ``DCMImgView``.
+    /// Decode a DICOM file and display it in the provided ``DicomPixelView``.
     @discardableResult
-    public func decodeAndDisplay(path: String, view: DCMImgView) async -> DicomProcessingResult {
+    public func decodeAndDisplay(path: String, view: DicomPixelView) async -> DicomProcessingResult {
         guard let dicomFile = DicomFile(forPath: path), let dataset = dicomFile.dataset else {
             return .failure(.decodingFailed)
         }
@@ -108,7 +108,7 @@ public final class DicomTool {
 
     /// Synchronous wrapper around ``decodeAndDisplay(path:view:)``.
     @discardableResult
-    public func decodeAndDisplay(path: String, view: DCMImgView) -> DicomProcessingResult {
+    public func decodeAndDisplay(path: String, view: DicomPixelView) -> DicomProcessingResult {
         let semaphore = DispatchSemaphore(value: 0)
         var result: DicomProcessingResult = .failure(.decodingFailed)
         Task {
@@ -158,7 +158,7 @@ public final class DicomTool {
 
     // MARK: - Convenience
 
-    public func quickProcess(path: String, view: DCMImgView) async -> Bool {
+    public func quickProcess(path: String, view: DicomPixelView) async -> Bool {
         switch await decodeAndDisplay(path: path, view: view) {
         case .success: return true
         case .failure: return false

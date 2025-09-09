@@ -11,7 +11,7 @@ import Foundation
 #if os(macOS)
 import Quartz
 import AppKit
-typealias UIImage = NSImage
+public typealias UIImage = NSImage
 extension NSImage {
     var png: Data? { tiffRepresentation?.bitmap?.png }
 }

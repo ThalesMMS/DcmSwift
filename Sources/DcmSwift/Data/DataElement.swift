@@ -116,13 +116,20 @@ public class DataElement : DicomObject {
             }
         } else {
             if let string = val as? String {
-                self.data = string.data(using: .utf8)
-                self.length = self.data.count
+                self.data = string.data(using: .utf8) ?? Data()
                 
-                if string.count % 2 != 0 {
-                    self.data.append(byte: 0x00)
-                    self.length += 1
+                // DICOM Standard Part 5, Section 6.2: Padding rules
+                // Text strings must be padded with SPACE (0x20), UIDs with NULL (0x00)
+                if self.data.count % 2 != 0 {
+                    if self.vr == .UI {
+                        // UIDs use NULL padding
+                        self.data.append(byte: 0x00)
+                    } else {
+                        // All text-based VRs use SPACE padding
+                        self.data.append(byte: 0x20)
+                    }
                 }
+                self.length = self.data.count
                 
                 ret = true
             }
@@ -315,8 +322,22 @@ public class DataElement : DicomObject {
     public override func toData(vrMethod inVrMethod:VRMethod = .Explicit, byteOrder inByteOrder:ByteOrder = .LittleEndian) -> Data {
         var data = Data()
         
+        // Debug logging for CommandGroupLength
+        if self.name == "CommandGroupLength" {
+            Logger.debug("DataElement.toData: Serializing CommandGroupLength")
+            Logger.debug("  - tag: \(self.tag)")
+            Logger.debug("  - vr: \(self.vr)")
+            Logger.debug("  - vrMethod: \(inVrMethod)")
+            Logger.debug("  - value: \(self.value)")
+            Logger.debug("  - length: \(self.length)")
+        }
+        
         // write tag code
-        data.append(self.tag.data(withByteOrder: inByteOrder))
+        let tagData = self.tag.data(withByteOrder: inByteOrder)
+        if self.name == "CommandGroupLength" {
+            Logger.debug("  - tag bytes: \(tagData.map { String(format: "%02X", $0) }.joined(separator: " "))")
+        }
+        data.append(tagData)
         
         // write VR (only explicit)
         if inVrMethod == .Explicit  {
@@ -379,6 +400,9 @@ public class DataElement : DicomObject {
             else if inVrMethod == .Implicit {
                 var intLength = UInt32(self.length)
                 let lengthData = Data(bytes: &intLength, count: 4)
+                if self.name == "CommandGroupLength" {
+                    Logger.debug("  - length bytes (Implicit VR): \(lengthData.map { String(format: "%02X", $0) }.joined(separator: " "))")
+                }
                 data.append(lengthData)
             }
         }
@@ -388,6 +412,9 @@ public class DataElement : DicomObject {
         if self.data != nil {
             if  self.vr == .UL {
                 // TODO: fix empty data for UL VR, causing missing data on write !!!
+                if self.name == "CommandGroupLength" {
+                    Logger.debug("  - value bytes (UL): \(self.data.map { String(format: "%02X", $0) }.joined(separator: " "))")
+                }
                 data.append(self.data)
             }
             else if self.vr == .OB {
@@ -450,6 +477,10 @@ public class DataElement : DicomObject {
                 self.vr == .TM  {
                 data.append(self.data)
             }
+        }
+        
+        if self.name == "CommandGroupLength" {
+            Logger.debug("  - COMPLETE serialized bytes: \(data.map { String(format: "%02X", $0) }.joined(separator: " "))")
         }
         
         return data

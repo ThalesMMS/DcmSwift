@@ -114,7 +114,7 @@ Once modified, write the dataset to a file again:
 `DicomTool` offers high level helpers for working with images:
 
 ```swift
-let view = DCMImgView()
+let view = DicomPixelView()
 // Decode and show the image
 let result = await DicomTool.shared.decodeAndDisplay(path: "/path/to/image.dcm", view: view)
 

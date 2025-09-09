@@ -28,60 +28,82 @@ public class CGetRQ: DataTF {
     }
     
     /**
-     This implementation of `data()` encodes PDU and Command part of the `C-GET-RQ` message.
+     This implementation of `data()` encodes PDU, Command and Query Dataset parts of the `C-GET-RQ` message.
+     FIXED: Now sends command and query dataset in the same PDU to ensure proper operation.
      */
     public override func data() -> Data? {
-        // fetch accepted PC
+        // 1. Get presentation context, abstract syntax, and command transfer syntax
         guard let pcID = association.acceptedPresentationContexts.keys.first,
               let spc = association.presentationContexts[pcID],
-              let transferSyntax = TransferSyntax(TransferSyntax.implicitVRLittleEndian),
+              let commandTransferSyntax = TransferSyntax(TransferSyntax.implicitVRLittleEndian),
               let abstractSyntax = spc.abstractSyntax else {
             return nil
         }
-        
-        // build command dataset
+
+        // 2. Check if a query dataset is present
+        let hasDataset = self.queryDataset != nil && self.queryDataset!.allElements.count > 0
+
+        // 3. Build the command dataset
         let commandDataset = DataSet()
-        _ = commandDataset.set(value: abstractSyntax as Any, forTagName: "AffectedSOPClassUID")
-        _ = commandDataset.set(value: CommandField.C_GET_RQ.rawValue.bigEndian, forTagName: "CommandField")
-        _ = commandDataset.set(value: UInt16(1).bigEndian, forTagName: "MessageID")
-        _ = commandDataset.set(value: UInt16(0).bigEndian, forTagName: "Priority")
-        _ = commandDataset.set(value: UInt16(1).bigEndian, forTagName: "CommandDataSetType")
+        _ = commandDataset.set(value: CommandField.C_GET_RQ.rawValue, forTagName: "CommandField")
+        _ = commandDataset.set(value: abstractSyntax, forTagName: "AffectedSOPClassUID")
+        _ = commandDataset.set(value: UInt16(1), forTagName: "MessageID")
+        _ = commandDataset.set(value: UInt16(0), forTagName: "Priority") // MEDIUM
+
+        if hasDataset {
+            _ = commandDataset.set(value: UInt16(0x0001), forTagName: "CommandDataSetType")
+        } else {
+            _ = commandDataset.set(value: UInt16(0x0102), forTagName: "CommandDataSetType")
+        }
         
-        let pduData = PDUData(
-            pduType: self.pduType,
-            commandDataset: commandDataset,
-            abstractSyntax: abstractSyntax,
-            transferSyntax: transferSyntax,
-            pcID: pcID, flags: 0x03)
+        // 4. Serialize the command dataset
+        var commandData = commandDataset.toData(transferSyntax: commandTransferSyntax)
+        let commandLength = commandData.count
+        _ = commandDataset.set(value: UInt32(commandLength), forTagName: "CommandGroupLength")
+        commandData = commandDataset.toData(transferSyntax: commandTransferSyntax)
         
-        return pduData.data()
+        // 5. Build the PDU payload (two PDVs when dataset exists)
+        var pduPayload = Data()
+
+        // Command PDV
+        var cmdPDV = Data()
+        let cmdHeader: UInt8 = 0b00000011 // Command, and always Last fragment for command part
+        cmdPDV.append(uint8: pcID, bigEndian: true)
+        cmdPDV.append(cmdHeader)
+        cmdPDV.append(commandData)
+        pduPayload.append(uint32: UInt32(cmdPDV.count), bigEndian: true)
+        pduPayload.append(cmdPDV)
+
+        // Data PDV (if any)
+        if hasDataset, let qrDataset = self.queryDataset {
+            guard let tsUID = self.association.acceptedPresentationContexts[pcID]?.transferSyntaxes.first,
+                  let dataTransferSyntax = TransferSyntax(tsUID) else {
+                return nil
+            }
+            let datasetData = qrDataset.toData(transferSyntax: dataTransferSyntax)
+            var dataPDV = Data()
+            dataPDV.append(uint8: pcID, bigEndian: true)
+            dataPDV.append(UInt8(0b00000010)) // Last only
+            dataPDV.append(datasetData)
+            pduPayload.append(uint32: UInt32(dataPDV.count), bigEndian: true)
+            pduPayload.append(dataPDV)
+        }
+        
+        // 6. Build the final P-DATA-TF PDU
+        var pdu = Data()
+        pdu.append(uint8: PDUType.dataTF.rawValue, bigEndian: true)
+        pdu.append(byte: 0x00) // reserved
+        pdu.append(uint32: UInt32(pduPayload.count), bigEndian: true)
+        pdu.append(pduPayload)
+        
+        return pdu
     }
     
     /**
-     This implementation of `messagesData()` encodes the query dataset into a valid `DataTF` message.
+     This implementation of `messagesData()` is now empty since query dataset is included in main data() method.
      */
     public override func messagesData() -> [Data] {
-        // fetch accepted TS from association
-        guard let pcID = association.acceptedPresentationContexts.keys.first,
-              let spc = association.presentationContexts[pcID],
-              let ats = self.association.acceptedTransferSyntax,
-              let transferSyntax = TransferSyntax(ats),
-              let abstractSyntax = spc.abstractSyntax else {
-            return []
-        }
-                
-        // encode query dataset elements
-        if let qrDataset = self.queryDataset, qrDataset.allElements.count > 0 {
-            let pduData = PDUData(
-                pduType: self.pduType,
-                commandDataset: qrDataset,
-                abstractSyntax: abstractSyntax,
-                transferSyntax: transferSyntax,
-                pcID: pcID, flags: 0x02)
-            
-            return [pduData.data()]
-        }
-        
+        // Query dataset is now sent together with command in data() method
         return []
     }
     

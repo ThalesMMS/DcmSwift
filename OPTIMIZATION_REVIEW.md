@@ -18,7 +18,7 @@ After thoroughly reviewing the DcmSwift codebase and comparing it with the optim
 - ❌ Missing: HU conversion utility methods
 - ❌ Missing: Distance calculation methods
 
-### 2. DCMImgView.swift
+### 2. DicomPixelView.swift
 **Status: Core Optimizations Integrated**
 - ✅ Context reuse optimization (shouldReuseContext)
 - ✅ Cached image data (cachedImageData, cachedImageDataValid)
@@ -48,7 +48,7 @@ After thoroughly reviewing the DcmSwift codebase and comparing it with the optim
 ## Missing Optimizations ❌
 
 ### 1. GPU Acceleration (Metal)
-The References/DCMImgView.swift contains a complete Metal implementation with:
+The References/DicomPixelView.swift contains a complete Metal implementation with:
 - Metal device setup
 - Custom compute shader for window/level processing
 - GPU buffer management
@@ -89,7 +89,7 @@ References WindowLevelService includes:
 ## Recommendations for Full Integration
 
 ### Priority 1: GPU Acceleration
-Implement the Metal GPU acceleration from References/DCMImgView.swift lines 606-723. This provides significant performance improvements for large medical images.
+Implement the Metal GPU acceleration from References/DicomPixelView.swift lines 606-723. This provides significant performance improvements for large medical images.
 
 ### Priority 2: Complete RGB Support
 Add the missing RGB/24-bit image handling methods for full DICOM format support.

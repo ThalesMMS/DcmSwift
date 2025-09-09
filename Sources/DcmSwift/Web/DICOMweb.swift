@@ -1,10 +1,8 @@
-import Foundation
-
 //
 //  DICOMWeb.swift
 //  DcmSwift
 //
-//  Created by Thales on 2025/01/05.
+//  Created by Thales on 2025/09/08.
 //
 /**
  DICOMweb Client Facade
@@ -12,6 +10,7 @@ import Foundation
  High-level interface for all DICOMweb services (WADO-RS, QIDO-RS, STOW-RS).
  Provides a unified API for interacting with DICOMweb servers.
  */
+import Foundation
 public class DICOMweb {
     
     // MARK: - Properties

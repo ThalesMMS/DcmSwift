@@ -84,6 +84,8 @@ extension PDUDecoder {
     private func receiveDIMSEMessage(data:Data, pduType:PDUType, commandField:CommandField, association:DicomAssociation) -> PDUDecodable? {
         var message:PDUMessage? = nil
         
+        Logger.debug("PDUDecoder: receiveDIMSEMessage - data size: \(data.count), pduType: \(pduType), commandField: \(commandField)")
+        
         if pduType == .dataTF {
             if commandField == .C_ECHO_RSP {
                 message = CEchoRSP(data: data, pduType: pduType, commandField:commandField, association: association)
@@ -92,6 +94,7 @@ extension PDUDecoder {
                 message = CEchoRQ(data: data, pduType: pduType, commandField:commandField, association: association)
             }
             else if commandField == .C_FIND_RSP {
+                Logger.debug("PDUDecoder: Creating CFindRSP with \(data.count) bytes")
                 message = CFindRSP(data: data, pduType: pduType, commandField:commandField, association: association)
             }
             else if commandField == .C_FIND_RQ {

@@ -61,7 +61,7 @@ public class DicomClient {
      */
     public init(aet: String, calledAE:DicomEntity) {
         self.calledAE       = calledAE
-        self.callingAE      = DicomEntity(title: aet, hostname: "localhost", port: 11112)
+        self.callingAE      = DicomEntity(title: aet, hostname: DicomEntity.getLocalIPAddress(), port: 4096)
         self.eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: System.coreCount)
     }
     
@@ -102,7 +102,7 @@ public class DicomClient {
     /**
      Perform a C-ECHO request to the `calledAE`
      
-     - Throws: `NetworkError.*`, `StreamError.*` or any other NIO realm errors
+     - Throws: `DicomNetworkError` for network-related failures
      
      - Returns: `true` if the C-ECHO-RSP DIMSE Status is `Success`
      
@@ -141,7 +141,7 @@ public class DicomClient {
      what attributes you want to get as result, and also to set filters to precise your search. If no query dataset
      is given, the `CFindSCUService` will provide you some default attributes (see `CFindSCUService.init()`)
      
-     - Throws: `NetworkError.*`, `StreamError.*` or any other NIO realm errors
+     - Throws: `DicomNetworkError` for network-related failures
      
      - Returns: a dataset array if the C-FIND-RSP DIMSE Status is `Success`. If the returned array is empty,
      the C-FIND SCP probably has no result for the given query.
@@ -190,7 +190,7 @@ public class DicomClient {
           
      - Parameter filePaths: an array of absolute path of DICOM files
      
-     - Throws: `NetworkError.*`, `StreamError.*` or any other NIO realm errors
+     - Throws: `DicomNetworkError` for network-related failures
      
      - Returns: `true` if the C-STORE-RSP DIMSE Status is `Success`
      
@@ -226,7 +226,7 @@ public class DicomClient {
      - Parameter destinationAET: The destination AE title where files should be sent
      - Parameter startTemporaryServer: If true, starts a temporary C-STORE SCP server to receive files
      
-     - Throws: `NetworkError.*`, `StreamError.*` or any other NIO realm errors
+     - Throws: `DicomNetworkError` for network-related failures
      
      - Returns: A tuple containing success status and optionally received files if a temporary server was used
      
@@ -252,6 +252,7 @@ public class DicomClient {
         
         var receivedFiles: [DicomFile] = []
         var server: DicomServer?
+        let group = DispatchGroup()
         
         // If requested, start a temporary C-STORE SCP server
         if startTemporaryServer {
@@ -273,16 +274,20 @@ public class DicomClient {
             }
             
             // Start server in background
+            group.enter()
             DispatchQueue.global(qos: .background).async {
                 do {
-                    try server?.start()
+                    try server?.start() {
+                        group.leave()
+                    }
                 } catch {
                     Logger.error("Failed to start temporary C-STORE server: \(error)")
+                    group.leave()
                 }
             }
             
-            // Give the server time to start
-            Thread.sleep(forTimeInterval: 0.5)
+            // Wait for the server to start
+            group.wait()
         }
         
         // Create and configure the C-MOVE association
@@ -323,7 +328,7 @@ public class DicomClient {
      - Parameter instanceUID: Optional specific instance UID
      - Parameter temporaryStoragePath: Path where received files will be temporarily stored
      
-     - Throws: `NetworkError.*`, `StreamError.*` or any other NIO realm errors
+     - Throws: `DicomNetworkError` for network-related failures
      
      - Returns: Array of received DicomFile objects
      

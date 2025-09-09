@@ -24,8 +24,18 @@ public class DataTag : DicomObject {
         return lhs.group == rhs.group && lhs.element == rhs.element
     }
     
-    public var code:String { return "\(self.group)\(self.element)" }
-    public var name:String { return DicomSpec.shared.nameForTag(withCode: code) ?? "Unknow" }
+    public var code:String { return "\(self.group)\(self.element)".lowercased() }
+    public var name:String { 
+        let tagName = DicomSpec.shared.nameForTag(withCode: code)
+        if tagName == nil && code == "0020000d" {
+            // Special debug for StudyInstanceUID
+            Logger.warning("DataTag: Cannot find name for StudyInstanceUID (0020000d)")
+            Logger.warning("  - group: '\(self.group)'")
+            Logger.warning("  - element: '\(self.element)'")
+            Logger.warning("  - computed code: '\(code)'")
+        }
+        return tagName ?? "Unknow"
+    }
     
     /**
      Inits a Tag with some Data and a byte order

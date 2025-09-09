@@ -50,6 +50,19 @@ extension Data {
     public func toHex() -> String {
         return self.reduce("") { $0 + String(format: "%02x", $1) }
     }
+
+    // Pretty hex with groups of N bytes separated by spaces.
+    // Example: spacing=4 -> "0002 0000 0000 0058 ..."
+    public func toHex(spacing: Int) -> String {
+        if spacing <= 0 { return toHex() }
+        var out = ""
+        out.reserveCapacity(self.count * 2 + self.count / spacing)
+        for (i, b) in self.enumerated() {
+            out += String(format: "%02x", b)
+            if i != self.count - 1 && (i + 1) % spacing == 0 { out += " " }
+        }
+        return out
+    }
     
     
 
@@ -136,19 +149,19 @@ extension Data {
     }
     
     
-    mutating func append(uint16 data: UInt16, bigEndian: Bool = true) {
+    mutating func append(uint16 data: UInt16, bigEndian: Bool = false) {
         let value = bigEndian ? data.bigEndian : data.littleEndian
         self.append(Data(from: value))
     }
     
     
-    mutating func append(uint32 data: UInt32, bigEndian: Bool = true) {
+    mutating func append(uint32 data: UInt32, bigEndian: Bool = false) {
         let value = bigEndian ? data.bigEndian : data.littleEndian
         self.append(Data(from: value))
     }
     
     
-    mutating func append(uint64 data: UInt64, bigEndian: Bool = true) {
+    mutating func append(uint64 data: UInt64, bigEndian: Bool = false) {
         let value = bigEndian ? data.bigEndian : data.littleEndian
         self.append(Data(from: value))
     }

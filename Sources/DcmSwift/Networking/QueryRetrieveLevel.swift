@@ -56,6 +56,7 @@ public enum QueryRetrieveLevel {
             _ = dataset.set(value:"", forTagName: "StudyID")
             _ = dataset.set(value:"", forTagName: "StudyInstanceUID")
             _ = dataset.set(value:"", forTagName: "AccessionNumber")
+            _ = dataset.set(value:"", forTagName: "ModalitiesInStudy")  // Often required for STUDY queries
             _ = dataset.set(value:"", forTagName: "NumberOfStudyRelatedSeries")
             _ = dataset.set(value:"", forTagName: "NumberOfStudyRelatedInstances")
             

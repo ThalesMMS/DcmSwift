@@ -36,7 +36,12 @@ let package = Package(
         
         .target(
             name: "DcmSwift",
-            dependencies: [ "Socket", .product(name: "NIO", package: "swift-nio"), .product(name: "Html", package: "swift-html") ]),
+            dependencies: [ "Socket", .product(name: "NIO", package: "swift-nio"), .product(name: "Html", package: "swift-html") ],
+            resources: [
+                // Resources are specified relative to the target directory
+                .process("Graphics/Shaders.metal")
+            ]
+        ),
         .target(
             name: "DcmAnonymize",
             dependencies: [

@@ -73,6 +73,17 @@ public class CFindSCU: ServiceClassUser {
             
             message.queryDataset = queryDataset
             
+            // Log query details for debugging
+            Logger.info("C-FIND Query Details:")
+            Logger.info("  - Query Level: \(self.queryLevel)")
+            Logger.info("  - Calling AET: \(association.callingAE)")
+            Logger.info("  - Called AET: \(association.calledAE)")
+            Logger.info("  - Query Fields:")
+            for element in queryDataset.allElements {
+                let value = element.value as? String ?? ""
+                Logger.info("    - \(element.name): '\(value)'")
+            }
+            
             return association.write(message: message, promise: p)
         }
         return channel.eventLoop.makeSucceededVoidFuture()
@@ -82,9 +93,13 @@ public class CFindSCU: ServiceClassUser {
     public override func receive(association:DicomAssociation, dataTF message:DataTF) -> DIMSEStatus.Status {
         var result:DIMSEStatus.Status = .Pending
         
+        Logger.debug("CFindSCU: Received message type: \(Swift.type(of: message))")
+        
         if let m = message as? CFindRSP {
             // C-FIND-RSP message (with or without DATA fragment)
             result = message.dimseStatus.status
+            
+            Logger.info("CFindSCU: Received C-FIND-RSP with status: \(result)")
             
             receiveRSP(m)
             
@@ -92,6 +107,8 @@ public class CFindSCU: ServiceClassUser {
         }
         else {
             // single DATA-TF fragment
+            Logger.debug("CFindSCU: Received DATA-TF fragment")
+            
             if let ats = association.acceptedTransferSyntax,
                let transferSyntax = TransferSyntax(ats) {
                 receiveData(message, transferSyntax: transferSyntax)
@@ -107,13 +124,25 @@ public class CFindSCU: ServiceClassUser {
     private func receiveRSP(_ message:CFindRSP) {
         if let dataset = message.resultsDataset {
             resultsDataset.append(dataset)
+            Logger.info("CFindSCU: Added result dataset to collection. Total results: \(resultsDataset.count)")
+            
+            // Log key fields for debugging
+            if let patientName = dataset.string(forTag: "PatientName") {
+                Logger.debug("CFindSCU: Result - PatientName: \(patientName)")
+            }
+            if let studyUID = dataset.string(forTag: "StudyInstanceUID") {
+                Logger.debug("CFindSCU: Result - StudyInstanceUID: \(studyUID)")
+            }
         } else {
             lastFindRSP = message
+            Logger.debug("CFindSCU: Received response without dataset (final response)")
         }
     }
     
     
     private func receiveData(_ message:DataTF, transferSyntax:TransferSyntax) {
+        Logger.debug("CFindSCU: Processing DATA-TF fragment with \(message.receivedData.count) bytes")
+        
         if message.receivedData.count > 0 {
             let dis = DicomInputStream(data: message.receivedData)
             
@@ -122,6 +151,9 @@ public class CFindSCU: ServiceClassUser {
         
             if let resultDataset = try? dis.readDataset(enforceVR: false) {
                 resultsDataset.append(resultDataset)
+                Logger.info("CFindSCU: Added dataset from fragment. Total results: \(resultsDataset.count)")
+            } else {
+                Logger.warning("CFindSCU: Failed to parse dataset from DATA-TF fragment")
             }
         }
     }

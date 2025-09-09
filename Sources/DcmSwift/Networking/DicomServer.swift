@@ -25,7 +25,7 @@ public struct ServerConfig {
 
 public class DicomServer: CEchoSCPDelegate, CFindSCPDelegate, CStoreSCPDelegate {
     var calledAE:DicomEntity!
-    var port: Int = 11112
+    var port: Int = 4096
     
     var config:ServerConfig
     
@@ -44,7 +44,7 @@ public class DicomServer: CEchoSCPDelegate, CFindSCPDelegate, CStoreSCPDelegate 
     }
     
     public init(port: Int, localAET:String, config:ServerConfig) {
-        self.calledAE   = DicomEntity(title: localAET, hostname: "localhost", port: port)
+        self.calledAE   = DicomEntity(title: localAET, hostname: DicomEntity.getLocalIPAddress(), port: port)
         self.port       = port
         self.config     = config
         
@@ -70,7 +70,7 @@ public class DicomServer: CEchoSCPDelegate, CFindSCPDelegate, CStoreSCPDelegate 
                     assoc.addServiceClassProvider(CStoreSCP(self))
                 }
                 
-                return channel.pipeline.addHandlers([ByteToMessageHandler(PDUBytesDecoder(withAssociation: assoc)), assoc])
+                return channel.pipeline.addHandlers([ByteToMessageHandler(PDUBytesDecoder()), assoc])
             }
             .childChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
             .childChannelOption(ChannelOptions.maxMessagesPerRead, value: 16)
@@ -87,13 +87,12 @@ public class DicomServer: CEchoSCPDelegate, CFindSCPDelegate, CStoreSCPDelegate 
     /**
      Starts the server
      */
-    public func start() throws {
+    public func start(completion: (() -> Void)? = nil) throws {
         channel = try bootstrap.bind(host: "0.0.0.0", port: port).wait()
         
         Logger.info("Server listening on port \(port)...")
         
-        // Don't wait here, let the server run in background
-        // try channel.closeFuture.wait()
+        completion?()
     }
     
     /**

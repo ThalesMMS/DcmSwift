@@ -30,61 +30,189 @@ public class CFindRQ: DataTF {
     
     
     /**
-     This implementation of `data()` encodes PDU and Command part of the `C-FIND-RQ` message.
+     Encodes the C-FIND request as a P-DATA-TF with 1 or 2 PDVs:
+     - PDV #1: Command Set (Command flag set, Last fragment set)
+     - PDV #2: Dataset (if present) (Command flag clear, Last fragment set)
+
+     Notes:
+     - Command Set always uses Implicit VR Little Endian.
+     - Dataset uses the accepted transfer syntax for the chosen Presentation Context.
+     - Presentation Context is selected to match the requested abstract syntax (FIND model).
      */
     public override func data() -> Data? {
-        // fetch accepted PC
-        guard let pcID = association.acceptedPresentationContexts.keys.first,
-              let spc = association.presentationContexts[pcID],
-              let transferSyntax = TransferSyntax(TransferSyntax.implicitVRLittleEndian),
-              let abstractSyntax = spc.abstractSyntax else {
+        Logger.debug("!!!! CFindRQ.data() CALLED !!!!")
+        
+        // 1. Find accepted Presentation Context for C-FIND (Study Root preferred, then Patient Root)
+        let studyAS = DicomConstants.StudyRootQueryRetrieveInformationModelFIND
+        let patientAS = DicomConstants.PatientRootQueryRetrieveInformationModelFIND
+
+        func findAcceptedPC(for asuid: String) -> UInt8? {
+            for (ctxID, _) in association.acceptedPresentationContexts {
+                if let proposed = association.presentationContexts[ctxID], proposed.abstractSyntax == asuid {
+                    return ctxID
+                }
+            }
             return nil
         }
-        
-        // build comand dataset
-        let commandDataset = DataSet()
-        _ = commandDataset.set(value: CommandField.C_FIND_RQ.rawValue.bigEndian, forTagName: "CommandField")
-        _ = commandDataset.set(value: abstractSyntax as Any, forTagName: "AffectedSOPClassUID")
-        _ = commandDataset.set(value: UInt16(1).bigEndian, forTagName: "MessageID")
-        _ = commandDataset.set(value: UInt16(0).bigEndian, forTagName: "Priority")
-        _ = commandDataset.set(value: UInt16(1).bigEndian, forTagName: "CommandDataSetType")
-        
-        let pduData = PDUData(
-            pduType: self.pduType,
-            commandDataset: commandDataset,
-            abstractSyntax: abstractSyntax,
-            transferSyntax: transferSyntax,
-            pcID: pcID, flags: 0x03)
-        
-        return pduData.data()
-    }
-    
-    
-    /**
-     This implementation of `messagesData()` encodes the query dataset into a valid `DataTF` message.
-     */
-    public override func messagesData() -> [Data] {
-        // fetch accepted TS from association
-        guard let pcID = association.acceptedPresentationContexts.keys.first,
+
+        guard let pcID = findAcceptedPC(for: studyAS) ?? findAcceptedPC(for: patientAS),
               let spc = association.presentationContexts[pcID],
-              let ats = self.association.acceptedTransferSyntax,
-              let transferSyntax = TransferSyntax(ats),
-              let abstractSyntax = spc.abstractSyntax else {
-            return []
+              let abstractSyntax = spc.abstractSyntax,
+              let commandTransferSyntax = TransferSyntax(TransferSyntax.implicitVRLittleEndian) else {
+            Logger.error("C-FIND: No accepted Presentation Context for Study/Patient Root FIND")
+            return nil
         }
-                
-        // encode query dataset elements
+        // 2. Prepare Command Dataset (always Implicit VR Little Endian)
+        let commandDataset = DataSet()
+        _ = commandDataset.set(value: CommandField.C_FIND_RQ.rawValue, forTagName: "CommandField")
+        _ = commandDataset.set(value: abstractSyntax, forTagName: "AffectedSOPClassUID")
+        _ = commandDataset.set(value: self.messageID, forTagName: "MessageID")
+        _ = commandDataset.set(value: UInt16(0), forTagName: "Priority") // MEDIUM
+
+        // 3. Prepare Data Dataset (if any)
+        var datasetData: Data? = nil
         if let qrDataset = self.queryDataset, qrDataset.allElements.count > 0 {
-            let pduData = PDUData(
-                pduType: self.pduType,
-                commandDataset: qrDataset,
-                abstractSyntax: abstractSyntax,
-                transferSyntax: transferSyntax,
-                pcID: pcID, flags: 0x02)
+            _ = commandDataset.set(value: UInt16(0x0101), forTagName: "CommandDataSetType") // DataSet follows
+            guard let dataTS_UID = association.acceptedPresentationContexts[pcID]?.transferSyntaxes.first,
+                  let dataTransferSyntax = TransferSyntax(dataTS_UID) else {
+                Logger.error("C-FIND: Could not find an accepted transfer syntax for PC ID \(pcID)")
+                return nil
+            }
             
-            return [pduData.data()]
+            // Log the query dataset before serialization
+            Logger.debug("--- BEGIN C-FIND QUERY DATASET DUMP ---")
+            for element in qrDataset.allElements {
+                let valueStr = element.value != nil ? "\(element.value)" : "<empty>"
+                Logger.debug("(\(element.tag)) \(element.name.padding(toLength: 25, withPad: " ", startingAt: 0)) \(element.vr): \(valueStr)")
+                
+                // WARN if any tag name is "Unknow" - indicates missing dictionary entry
+                if element.name == "Unknow" {
+                    Logger.error("WARNING: Tag \(element.tag) has no dictionary entry! This may cause PACS to reject the query.")
+                    Logger.error("Consider removing this field from the query or fixing the dictionary.")
+                }
+            }
+            Logger.debug("--- END C-FIND QUERY DATASET DUMP ---")
+            
+            datasetData = qrDataset.toData(transferSyntax: dataTransferSyntax)
+        } else {
+            _ = commandDataset.set(value: UInt16(0x0102), forTagName: "CommandDataSetType") // No DataSet
+        }
+
+        // Log the command dataset before serialization
+        Logger.debug("--- BEGIN C-FIND COMMAND DATASET DUMP ---")
+        for element in commandDataset.allElements {
+            let valueStr: String
+            if element.name == "CommandField", let cmdValue = element.value as? UInt16 {
+                valueStr = "\(cmdValue) [C_FIND_RQ]"
+            } else if element.name == "Priority", let prio = element.value as? UInt16 {
+                valueStr = "\(prio) [\(prio == 0 ? "MEDIUM" : prio == 1 ? "HIGH" : "LOW")]"
+            } else if element.name == "CommandDataSetType", let dsType = element.value as? UInt16 {
+                valueStr = "\(dsType) [\(dsType == 0x0101 ? "HAS_DATASET" : dsType == 0x0102 ? "NO_DATASET" : "UNKNOWN")]"
+            } else {
+                valueStr = element.value != nil ? "\(element.value)" : "<empty>"
+            }
+            Logger.debug("(\(element.tag)) \(element.name.padding(toLength: 25, withPad: " ", startingAt: 0)) \(element.vr): \(valueStr)")
+        }
+        Logger.debug("--- END C-FIND COMMAND DATASET DUMP ---")
+
+        // 4. Compute CommandGroupLength and serialize command
+        // IMPORTANT: First create CommandGroupLength with placeholder value
+        _ = commandDataset.set(value: UInt32(0), forTagName: "CommandGroupLength")
+        
+        // Now serialize the complete dataset to get correct size
+        var commandData = commandDataset.toData(transferSyntax: commandTransferSyntax)
+        
+        // The CommandGroupLength should be the total size minus the CommandGroupLength element itself (12 bytes)
+        // CommandGroupLength in Implicit VR = 4 bytes (tag) + 4 bytes (length) + 4 bytes (value) = 12 bytes
+        let commandLength = commandData.count - 12
+        
+        Logger.debug("C-FIND: Total command size: \(commandData.count), Setting CommandGroupLength to \(commandLength)")
+        
+        // Update CommandGroupLength with correct value
+        _ = commandDataset.set(value: UInt32(commandLength), forTagName: "CommandGroupLength")
+        
+        // Re-serialize with correct CommandGroupLength value
+        commandData = commandDataset.toData(transferSyntax: commandTransferSyntax)
+        
+        // Verify CommandGroupLength is first in the dataset
+        if let firstElement = commandDataset.allElements.first {
+            Logger.debug("C-FIND: First element in dataset: tag=\(firstElement.tag), name=\(firstElement.name)")
+            if firstElement.name != "CommandGroupLength" {
+                Logger.error("C-FIND: WARNING - CommandGroupLength is not the first element!")
+            }
         }
         
+        // Log serialization results
+        Logger.info("C-FIND: Final Command Dataset (\(commandData.count) bytes), Query Dataset (\(datasetData?.count ?? 0) bytes)")
+        if commandData.count >= 20 {
+            let preview = commandData.prefix(20).map { String(format: "%02X", $0) }.joined(separator: " ")
+            Logger.debug("C-FIND: Command first 20 bytes: \(preview)")
+            
+            // Also log the expected bytes for CommandGroupLength
+            Logger.debug("C-FIND: Expected CommandGroupLength bytes: 00 00 00 00 04 00 00 00 \(String(format: "%02X", commandLength & 0xFF)) \(String(format: "%02X", (commandLength >> 8) & 0xFF)) \(String(format: "%02X", (commandLength >> 16) & 0xFF)) \(String(format: "%02X", (commandLength >> 24) & 0xFF))")
+        }
+        if let dsData = datasetData, dsData.count >= 8 {
+            let preview = dsData.prefix(16).map { String(format: "%02X", $0) }.joined(separator: " ")
+            Logger.debug("C-FIND: Query first bytes: \(preview)")
+        }
+
+        // 5. Build PDU with one or two PDVs
+        var pduPayload = Data()
+
+        // 5.1 Command PDV
+        var commandPDV = Data()
+        let commandMessageHeader: UInt8 = 0b00000011 // Command, and always Last fragment for command part
+        commandPDV.append(uint8: pcID, bigEndian: true)
+        commandPDV.append(commandMessageHeader)
+        
+        // Debug: Check commandData before appending
+        Logger.debug("C-FIND: About to append commandData of \(commandData.count) bytes")
+        Logger.debug("C-FIND: commandData first 12 bytes BEFORE append: \(commandData.prefix(12).map { String(format: "%02X", $0) }.joined(separator: " "))")
+        
+        commandPDV.append(commandData)
+        
+        // Debug: Check commandPDV after appending
+        Logger.debug("C-FIND: commandPDV after append (first 16 bytes): \(commandPDV.prefix(16).map { String(format: "%02X", $0) }.joined(separator: " "))")
+        
+        pduPayload.append(uint32: UInt32(commandPDV.count), bigEndian: true)
+        pduPayload.append(commandPDV)
+
+        // 5.2 DataSet PDV (if any)
+        if let data = datasetData {
+            var dataPDV = Data()
+            let dataMessageHeader: UInt8 = 0b00000010 // Last fragment only
+            dataPDV.append(uint8: pcID, bigEndian: true)
+            dataPDV.append(dataMessageHeader)
+            dataPDV.append(data)
+            pduPayload.append(uint32: UInt32(dataPDV.count), bigEndian: true)
+            pduPayload.append(dataPDV)
+        }
+
+        Logger.info("C-FIND using PCID=\(pcID) AS=\(abstractSyntax) cmdLen=\(commandData.count) dsLen=\(datasetData?.count ?? 0)")
+
+        // 6. Final P-DATA-TF PDU
+        var pdu = Data()
+        pdu.append(uint8: PDUType.dataTF.rawValue, bigEndian: true)
+        pdu.append(byte: 0x00)
+        pdu.append(uint32: UInt32(pduPayload.count), bigEndian: true)
+        
+        // Debug: Check pduPayload before final append
+        Logger.debug("C-FIND: pduPayload first 20 bytes: \(pduPayload.prefix(20).map { String(format: "%02X", $0) }.joined(separator: " "))")
+        
+        pdu.append(pduPayload)
+        
+        // Debug: Check final PDU
+        Logger.debug("C-FIND: Final PDU first 30 bytes: \(pdu.prefix(30).map { String(format: "%02X", $0) }.joined(separator: " "))")
+        
+        // CRITICAL DEBUG: Log the exact data being returned
+        Logger.debug("C-FIND: !!!! RETURNING PDU of \(pdu.count) bytes")
+        Logger.debug("C-FIND: !!!! First 40 bytes being returned: \(pdu.prefix(40).map { String(format: "%02X", $0) }.joined(separator: " "))")
+        
+        return pdu
+    }
+
+    public override func messagesData() -> [Data] {
+        // This is no longer needed as the dataset is sent with the command PDU.
         return []
     }
     

@@ -32,92 +32,75 @@ public class CStoreRQ: DataTF {
     
     
     public override func data() -> Data? {
-        // get file SOPClassUID
-        if let sopClassUID    = dicomFile?.dataset.string(forTag: "SOPClassUID"),
-           let sopInstanceUID = dicomFile?.dataset.string(forTag: "SOPInstanceUID"),
-           let transferSyntax = TransferSyntax(TransferSyntax.implicitVRLittleEndian),
-           let pc = self.association.acceptedPresentationContexts(forSOPClassUID: sopClassUID).first {
-            
-            let commandDataset = DataSet()
-            _ = commandDataset.set(value: CommandField.C_STORE_RQ.rawValue.bigEndian, forTagName: "CommandField")
-            _ = commandDataset.set(value: sopClassUID, forTagName: "AffectedSOPClassUID")
-            _ = commandDataset.set(value: UInt16(1).bigEndian, forTagName: "MessageID")
-            _ = commandDataset.set(value: UInt16(0).bigEndian, forTagName: "Priority")
-            _ = commandDataset.set(value: UInt16(1).bigEndian, forTagName: "CommandDataSetType")
-            _ = commandDataset.set(value: sopInstanceUID, forTagName: "AffectedSOPInstanceUID")
-                        
-            let pduData = PDUData(
-                pduType: self.pduType,
-                commandDataset: commandDataset,
-                abstractSyntax: pc.abstractSyntax,
-                transferSyntax: transferSyntax,
-                pcID: pc.contextID, flags: 0x03)
-
-            return pduData.data()
+        // get file SOPClassUID and accepted PC
+        guard let sopClassUID = dicomFile?.dataset.string(forTag: "SOPClassUID"),
+              let sopInstanceUID = dicomFile?.dataset.string(forTag: "SOPInstanceUID"),
+              let commandTransferSyntax = TransferSyntax(TransferSyntax.implicitVRLittleEndian),
+              let pc = self.association.acceptedPresentationContexts(forSOPClassUID: sopClassUID).first else {
+            Logger.error("File cannot be sent because no SOP Class UID was found.")
+            return nil
         }
-        
-        Logger.error("File cannot be sent because oo SOP Class UID was found.")
-        
-        return nil
+
+        // 1) Build Command Set
+        let commandDataset = DataSet()
+        _ = commandDataset.set(value: CommandField.C_STORE_RQ.rawValue, forTagName: "CommandField")
+        _ = commandDataset.set(value: sopClassUID, forTagName: "AffectedSOPClassUID")
+        _ = commandDataset.set(value: UInt16(1), forTagName: "MessageID")
+        _ = commandDataset.set(value: UInt16(0), forTagName: "Priority")
+        _ = commandDataset.set(value: UInt16(1), forTagName: "CommandDataSetType")
+        _ = commandDataset.set(value: sopInstanceUID, forTagName: "AffectedSOPInstanceUID")
+
+        var commandData = commandDataset.toData(transferSyntax: commandTransferSyntax)
+        let commandLength = commandData.count
+        _ = commandDataset.set(value: UInt32(commandLength), forTagName: "CommandGroupLength")
+        commandData = commandDataset.toData(transferSyntax: commandTransferSyntax)
+
+        // 2) Data Set bytes with negotiated TS for this PC
+        var datasetData: Data? = nil
+        if let dicomFile = self.dicomFile,
+           let tsUID = self.association.acceptedPresentationContexts[pc.contextID]?.transferSyntaxes.first,
+           let dataTransferSyntax = TransferSyntax(tsUID) {
+            datasetData = dicomFile.dataset.toData(transferSyntax: dataTransferSyntax)
+        }
+
+        // 3) Build PDU with two PDVs
+        var pduPayload = Data()
+
+        // Command PDV
+        var cmdPDV = Data()
+        let cmdHeader: UInt8 = 0b00000011 // Command, and always Last fragment for command part
+        cmdPDV.append(uint8: pc.contextID, bigEndian: true)
+        cmdPDV.append(cmdHeader)
+        cmdPDV.append(commandData)
+        pduPayload.append(uint32: UInt32(cmdPDV.count), bigEndian: true)
+        pduPayload.append(cmdPDV)
+
+        // Data PDV (if any)
+        if let ds = datasetData {
+            var dataPDV = Data()
+            dataPDV.append(uint8: pc.contextID, bigEndian: true)
+            dataPDV.append(UInt8(0b00000010)) // Last only
+            dataPDV.append(ds)
+            pduPayload.append(uint32: UInt32(dataPDV.count), bigEndian: true)
+            pduPayload.append(dataPDV)
+        }
+
+        var pdu = Data()
+        pdu.append(uint8: PDUType.dataTF.rawValue, bigEndian: true)
+        pdu.append(byte: 0x00)
+        pdu.append(uint32: UInt32(pduPayload.count), bigEndian: true)
+        pdu.append(pduPayload)
+        return pdu
     }
     
     
     public override func messagesData() -> [Data] {
-        var datas:[Data] = []
-        
-        if let sopClassUID = dicomFile?.dataset.string(forTag: "SOPClassUID"),
-           let ats = association.acceptedTransferSyntax,
-           let transferSyntax = TransferSyntax(ats) {
-            let pcs:[PresentationContext] = self.association.acceptedPresentationContexts(forSOPClassUID: sopClassUID)
-            
-            if !pcs.isEmpty {
-                if let dataset = dicomFile?.dataset {
-                    print("ts \(transferSyntax)")
-                    let fileData = dataset.DIMSEData(transferSyntax: transferSyntax)
-                    
-                    Logger.verbose("    -> Used PDU : \(association.maxPDULength)", "CStoreRQ")
-                    
-                    let chunks = fileData.chunck(into: association.maxPDULength - 12)
-                    var index = 0
-                    
-                    // TODO: switch to PDUData class?
-                    for chunkData in chunks {
-                        var data = Data()
-                        var pdvData2 = Data()
-                        let pdvLength2 = chunkData.count + 2
-                        
-                        pdvData2.append(uint32: UInt32(pdvLength2), bigEndian: true)
-                        pdvData2.append(uint8: pcs.first!.contextID, bigEndian: true) // Context
-                        
-                        if chunkData == chunks.last {
-                            pdvData2.append(byte: 0x02) // Flags : last fragment
-                        } else {
-                            pdvData2.append(byte: 0x00) // Flags : more fragment coming
-                        }
-                        
-                        pdvData2.append(chunkData)
-                        
-                        let pduLength2 = UInt32(pdvLength2 + 4)
-                        data.append(uint8: self.pduType.rawValue, bigEndian: true)
-                        data.append(byte: 0x00) // reserved
-                        data.append(uint32: pduLength2, bigEndian: true)
-                        data.append(pdvData2)
-                        
-                        datas.append(data)
-                        index += 1
-                    }
-                }
-            }
-        }
-        
-        return datas
+        return []
     }
     
     
     public override func decodeData(data: Data) -> DIMSEStatus.Status {
         let status = super.decodeData(data: data)
-        
-        
         
         return status
     }

@@ -2,12 +2,15 @@
 import UIKit
 import CoreGraphics
 import Foundation
+#if canImport(Metal)
+import Metal
+#endif
 
 /// Lightweight view for displaying DICOM pixel buffers (grayscale).
 /// - Focuses on efficient redraws (post-window/level cache) and CGContext reuse.
 /// - Supports 8-bit and 16-bit input. For 16-bit, uses a LUT (external or derived from the window).
 @MainActor
-public final class DCMImgView: UIView {
+public final class DicomPixelView: UIView {
 
     // MARK: - Pixel State
     private var pix8: [UInt8]? = nil
@@ -34,6 +37,9 @@ public final class DCMImgView: UIView {
     private var cachedImageData: [UInt8]? = nil
     private var cachedImageDataValid: Bool = false
 
+    // Raw RGB(A) buffer (pass-through, no windowing). When set, we ignore pix8/pix16.
+    private var pixRGBA: [UInt8]? = nil
+
     // MARK: - Context/CoreGraphics
     private var colorspace: CGColorSpace?
     private var bitmapContext: CGContext?
@@ -43,6 +49,10 @@ public final class DCMImgView: UIView {
     private var lastContextHeight: Int = 0
     private var lastSamplesPerPixel: Int = 0
 
+    // Performance metrics (optional)
+    public var enablePerfMetrics: Bool = false
+    private var debugLogsEnabled: Bool { UserDefaults.standard.bool(forKey: "settings.debugLogsEnabled") }
+
     // MARK: - Public API
 
     /// Set 8-bit pixels (grayscale) and apply window.
@@ -50,6 +60,7 @@ public final class DCMImgView: UIView {
                            windowWidth: Int, windowCenter: Int) {
         pix8 = pixels
         pix16 = nil
+        pixRGBA = nil
         imgWidth = width
         imgHeight = height
         samplesPerPixel = 1
@@ -64,10 +75,61 @@ public final class DCMImgView: UIView {
                             windowWidth: Int, windowCenter: Int) {
         pix16 = pixels
         pix8 = nil
+        pixRGBA = nil
         imgWidth = width
         imgHeight = height
         samplesPerPixel = 1
         setWindow(center: windowCenter, width: windowWidth)
+        cachedImageDataValid = false
+        recomputeImage()
+        setNeedsDisplay()
+    }
+
+    /// Set 24-bit RGB or BGR pixels. Internally converted to RGBA (noneSkipLast) for fast drawing.
+    public func setPixelsRGB(_ pixels: [UInt8], width: Int, height: Int, bgr: Bool = false) {
+        let count = width * height
+        guard pixels.count >= count * 3 else { return }
+
+        // Convert to RGBA (noneSkipLast): 4 bytes per pixel, alpha unused.
+        var rgba = [UInt8](repeating: 0, count: count * 4)
+        pixels.withUnsafeBufferPointer { srcBuf in
+            rgba.withUnsafeMutableBufferPointer { dstBuf in
+                let s = srcBuf.baseAddress!
+                let d = dstBuf.baseAddress!
+                var i = 0
+                var j = 0
+                if bgr {
+                    while i < count {
+                        let b = s[j]
+                        let g = s[j+1]
+                        let r = s[j+2]
+                        d[i*4+0] = r
+                        d[i*4+1] = g
+                        d[i*4+2] = b
+                        d[i*4+3] = 255
+                        i += 1; j += 3
+                    }
+                } else {
+                    while i < count {
+                        let r = s[j]
+                        let g = s[j+1]
+                        let b = s[j+2]
+                        d[i*4+0] = r
+                        d[i*4+1] = g
+                        d[i*4+2] = b
+                        d[i*4+3] = 255
+                        i += 1; j += 3
+                    }
+                }
+            }
+        }
+        pixRGBA = rgba
+        pix8 = nil
+        pix16 = nil
+        imgWidth = width
+        imgHeight = height
+        samplesPerPixel = 4
+        // Windowing does not apply for true color; preserve current WL but do not recompute mapping.
         cachedImageDataValid = false
         recomputeImage()
         setNeedsDisplay()
@@ -127,8 +189,15 @@ public final class DCMImgView: UIView {
     // MARK: - Image construction (core)
 
     private func recomputeImage() {
+        let t0 = enablePerfMetrics ? CFAbsoluteTimeGetCurrent() : 0
+        if debugLogsEnabled {
+            print("[DicomPixelView] recomputeImage start size=\(imgWidth)x\(imgHeight) spp=\(samplesPerPixel) cacheValid=\(cachedImageDataValid)")
+        }
         guard imgWidth > 0, imgHeight > 0 else { return }
-        guard !cachedImageDataValid else { return }
+        guard !cachedImageDataValid else {
+            if debugLogsEnabled { print("[DicomPixelView] skip recompute (cache valid)") }
+            return
+        }
 
         // Ensure context reuse if dimensions/SPP match.
         if !shouldReuseContext(width: imgWidth, height: imgHeight, samples: samplesPerPixel) {
@@ -138,19 +207,28 @@ public final class DCMImgView: UIView {
             lastContextWidth = imgWidth
             lastContextHeight = imgHeight
             lastSamplesPerPixel = samplesPerPixel
+            if debugLogsEnabled { print("[DicomPixelView] context reset for size/SPP") }
+        } else if debugLogsEnabled {
+            print("[DicomPixelView] context reused")
         }
 
-        // Allocate/reuse 8-bit buffer (single channel).
+        // Allocate/reuse target buffer
         let pixelCount = imgWidth * imgHeight
         if cachedImageData == nil || cachedImageData!.count != pixelCount * samplesPerPixel {
             cachedImageData = Array(repeating: 0, count: pixelCount * samplesPerPixel)
         }
 
         // Paths: direct 8-bit or 16-bit with LUT (external or derived from window)
-        if let src8 = pix8 {
+        if let rgba = pixRGBA {
+            // Color path: pass-through RGBA buffer
+            cachedImageData = rgba
+            if debugLogsEnabled { print("[DicomPixelView] path=RGBA passthrough") }
+        } else if let src8 = pix8 {
+            if debugLogsEnabled { print("[DicomPixelView] path=8-bit CPU WL") }
             applyWindowTo8(src8, into: &cachedImageData!)
         } else if let src16 = pix16 {
             let lut = lut16 ?? buildDerivedLUT16(winMin: winMin, winMax: winMax)
+            if debugLogsEnabled { print("[DicomPixelView] path=16-bit attempting GPU WL (fallback to CPU LUT if unavailable)") }
             applyLUTTo16(src16, lut: lut, into: &cachedImageData!)
         } else {
             // Nothing to do
@@ -181,6 +259,10 @@ public final class DCMImgView: UIView {
                 bitmapImage = nil
             }
         }
+        if enablePerfMetrics {
+            let dt = CFAbsoluteTimeGetCurrent() - t0
+            print("[PERF][DicomPixelView] recomputeImage dt=\(String(format: "%.3f", dt*1000)) ms, spp=\(samplesPerPixel), size=\(imgWidth)x\(imgHeight)")
+        }
     }
 
     // MARK: - 8-bit window/level
@@ -188,7 +270,7 @@ public final class DCMImgView: UIView {
     private func applyWindowTo8(_ src: [UInt8], into dst: inout [UInt8]) {
         let numPixels = imgWidth * imgHeight
         guard src.count >= numPixels, dst.count >= numPixels else {
-            print("[DCMImgView] Error: pixel buffers too small. Expected \(numPixels), got src: \(src.count) dst: \(dst.count)")
+            print("[DicomPixelView] Error: pixel buffers too small. Expected \(numPixels), got src: \(src.count) dst: \(dst.count)")
             return
         }
         let denom = max(winMax - winMin, 1)
@@ -274,7 +356,7 @@ public final class DCMImgView: UIView {
     private func applyLUTTo16(_ src: [UInt16], lut: [UInt8], into dst: inout [UInt8]) {
         let numPixels = imgWidth * imgHeight
         guard src.count >= numPixels, dst.count >= numPixels, lut.count >= 65536 else {
-            print("[DCMImgView] Error: buffer sizes invalid. Pixels expected \(numPixels), got src \(src.count) dst \(dst.count); LUT \(lut.count)")
+            print("[DicomPixelView] Error: buffer sizes invalid. Pixels expected \(numPixels), got src \(src.count) dst \(dst.count); LUT \(lut.count)")
             return
         }
 
@@ -288,7 +370,11 @@ public final class DCMImgView: UIView {
                                  winMax: winMax)
             }
         }
-        if usedGPU { return }
+        if usedGPU {
+            if debugLogsEnabled { print("[DicomPixelView] GPU WL path used (Metal)") }
+            return
+        } else if debugLogsEnabled {
+            print("[DicomPixelView] GPU unavailable or failed, using CPU LUT fallback") }
 
         // Parallel CPU for large images
         if numPixels > 2_000_000 {
@@ -358,6 +444,23 @@ public final class DCMImgView: UIView {
         bitmapImage = nil
     }
 
+    /// Clear cached image and intermediate buffers to free memory.
+    public func clearCache() {
+        cachedImageData = nil
+        cachedImageDataValid = false
+        resetImage()
+    }
+
+    /// Rough memory usage estimate for current buffers (bytes).
+    public func estimatedMemoryUsage() -> Int {
+        let pixelCount = imgWidth * imgHeight
+        let current = cachedImageData?.count ?? 0
+        let src8 = pix8?.count ?? 0
+        let src16 = (pix16?.count ?? 0) * 2
+        let rgba = pixRGBA?.count ?? 0
+        return current + src8 + src16 + rgba + pixelCount // CG overhead estimate
+    }
+
     // MARK: - GPU (stub)
 
     private func processPixelsGPU(inputPixels: UnsafePointer<UInt16>,
@@ -365,8 +468,69 @@ public final class DCMImgView: UIView {
                                   pixelCount: Int,
                                   winMin: Int,
                                   winMax: Int) -> Bool {
-        // Metal/Accelerate integration could go here.
+#if canImport(Metal)
+        let accel = MetalAccelerator.shared
+        guard accel.isAvailable,
+              let device = accel.device,
+              let pso = accel.windowLevelPipelineState,
+              let queue = device.makeCommandQueue()
+        else { return false }
+        let t0 = enablePerfMetrics ? CFAbsoluteTimeGetCurrent() : 0
+
+        // Match CPU mapping using winMin/denom directly
+        let width = max(1, winMax - winMin)
+
+        let inLen = pixelCount * MemoryLayout<UInt16>.stride
+        let outLen = pixelCount * MemoryLayout<UInt8>.stride
+
+        guard let inBuf = device.makeBuffer(bytesNoCopy: UnsafeMutableRawPointer(mutating: inputPixels),
+                                            length: inLen,
+                                            options: .storageModeShared,
+                                            deallocator: nil),
+              let outBuf = device.makeBuffer(length: outLen, options: .storageModeShared)
+        else { return false }
+
+        var uCount = UInt32(pixelCount)
+        var sWinMin = Int32(winMin)
+        var uDenom = UInt32(width)
+        var invert: Bool = false
+
+        guard let countBuf = device.makeBuffer(bytes: &uCount, length: MemoryLayout<UInt32>.stride, options: .storageModeShared),
+              let levelBuf = device.makeBuffer(bytes: &sWinMin, length: MemoryLayout<Int32>.stride, options: .storageModeShared),
+              let winBuf = device.makeBuffer(bytes: &uDenom, length: MemoryLayout<UInt32>.stride, options: .storageModeShared),
+              let invBuf = device.makeBuffer(bytes: &invert, length: MemoryLayout<Bool>.stride, options: .storageModeShared)
+        else { return false }
+
+        guard let cmd = queue.makeCommandBuffer(),
+              let enc = cmd.makeComputeCommandEncoder() else { return false }
+
+        enc.setComputePipelineState(pso)
+        enc.setBuffer(inBuf, offset: 0, index: 0)
+        enc.setBuffer(outBuf, offset: 0, index: 1)
+        enc.setBuffer(countBuf, offset: 0, index: 2)
+        enc.setBuffer(levelBuf, offset: 0, index: 3)
+        enc.setBuffer(winBuf, offset: 0, index: 4)
+        enc.setBuffer(invBuf, offset: 0, index: 5)
+
+        let w = pso.threadExecutionWidth
+        let tpt = MTLSize(width: max(1, min(w, 256)), height: 1, depth: 1)
+        let threads = MTLSize(width: pixelCount, height: 1, depth: 1)
+        enc.dispatchThreads(threads, threadsPerThreadgroup: tpt)
+        enc.endEncoding()
+
+        cmd.commit()
+        cmd.waitUntilCompleted()
+
+        let ptr = outBuf.contents()
+        memcpy(outputPixels, ptr, outLen)
+        if enablePerfMetrics {
+            let dt = CFAbsoluteTimeGetCurrent() - t0
+            print("[PERF][DicomPixelView] GPU WL dt=\(String(format: "%.3f", dt*1000)) ms for \(pixelCount) px")
+        }
+        return true
+#else
         return false
+#endif
     }
 }
 #endif
