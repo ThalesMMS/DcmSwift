@@ -87,26 +87,29 @@ public class OffsetInputStream {
      - Returns: the data read in the stream, or nil
      */
     public func read(length:Int) -> Data? {
+        if total > 0 && length > readableBytes {
+            // When the total size is known, avoid reading past the end of the stream.
+            return nil
+        }
+
         // allocate memory buffer with given length
         let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: length)
-        
+        defer { buffer.deallocate() } // ensure buffer is freed even on early return
+
         // fill the buffer by reading bytes with given length
         let read = stream.read(buffer, maxLength: length)
-        
+
         if read < 0 || read < length {
             //Logger.warning("Cannot read \(length) bytes")
             return nil
         }
-        
+
         // create a Data object with filled buffer
         let data = Data(bytes: buffer, count: length)
-        
+
         // maintain local offset
         offset += read
-        
-        // clean the memory
-        buffer.deallocate()
-        
+
         return data
     }
 
