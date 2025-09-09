@@ -18,6 +18,7 @@ public final class MetalAccelerator {
     public let device: MTLDevice?
     public let library: MTLLibrary?
     public let windowLevelPipelineState: MTLComputePipelineState?
+    public let commandQueue: MTLCommandQueue?
 
     public var isAvailable: Bool { windowLevelPipelineState != nil }
 
@@ -25,17 +26,19 @@ public final class MetalAccelerator {
         let debug = UserDefaults.standard.bool(forKey: "settings.debugLogsEnabled")
         // Allow opt-out via env/UD flag
         if ProcessInfo.processInfo.environment["DCMSWIFT_DISABLE_METAL"] == "1" {
-            device = nil; library = nil; windowLevelPipelineState = nil
+            device = nil; library = nil; windowLevelPipelineState = nil; commandQueue = nil
             if debug { print("[MetalAccelerator] Disabled via DCMSWIFT_DISABLE_METAL=1") }
             return
         }
 
         guard let dev = MTLCreateSystemDefaultDevice() else {
-            device = nil; library = nil; windowLevelPipelineState = nil
+            device = nil; library = nil; windowLevelPipelineState = nil; commandQueue = nil
             if debug { print("[MetalAccelerator] No Metal device available") }
             return
         }
         device = dev
+        commandQueue = dev.makeCommandQueue()
+        commandQueue?.maxCommandBufferCount = 3 // allow a few in-flight buffers
 
         // Load the module's compiled metallib. Prefer the modern API that understands SPM bundles.
         var lib: MTLLibrary? = nil

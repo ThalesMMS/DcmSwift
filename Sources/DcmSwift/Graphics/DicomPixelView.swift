@@ -218,7 +218,7 @@ public final class DicomPixelView: UIView {
             cachedImageData = Array(repeating: 0, count: pixelCount * samplesPerPixel)
         }
 
-        // Paths: direct 8-bit or 16-bit with LUT (external or derived from window)
+        // Paths: direct 8-bit or 16-bit
         if let rgba = pixRGBA {
             // Color path: pass-through RGBA buffer
             cachedImageData = rgba
@@ -227,9 +227,16 @@ public final class DicomPixelView: UIView {
             if debugLogsEnabled { print("[DicomPixelView] path=8-bit CPU WL") }
             applyWindowTo8(src8, into: &cachedImageData!)
         } else if let src16 = pix16 {
-            let lut = lut16 ?? buildDerivedLUT16(winMin: winMin, winMax: winMax)
-            if debugLogsEnabled { print("[DicomPixelView] path=16-bit attempting GPU WL (fallback to CPU LUT if unavailable)") }
-            applyLUTTo16(src16, lut: lut, into: &cachedImageData!)
+            if let extLUT = lut16 {
+                if debugLogsEnabled { print("[DicomPixelView] path=16-bit external LUT CPU") }
+                applyLUTTo16CPU(src16, lut: extLUT, into: &cachedImageData!)
+            } else if applyWindowTo16GPU(src16, into: &cachedImageData!) {
+                if debugLogsEnabled { print("[DicomPixelView] path=16-bit GPU WL") }
+            } else {
+                if debugLogsEnabled { print("[DicomPixelView] path=16-bit CPU LUT fallback") }
+                let lut = buildDerivedLUT16(winMin: winMin, winMax: winMax)
+                applyLUTTo16CPU(src16, lut: lut, into: &cachedImageData!)
+            }
         } else {
             // Nothing to do
             return
@@ -337,7 +344,7 @@ public final class DicomPixelView: UIView {
         }
     }
 
-    // MARK: - 16-bit via LUT
+    // MARK: - 16-bit window/level
 
     /// Build a LUT derived from window/level (MONOCHROME2).
     private func buildDerivedLUT16(winMin: Int, winMax: Int) -> [UInt8] {
@@ -353,28 +360,12 @@ public final class DicomPixelView: UIView {
         return lut
     }
 
-    private func applyLUTTo16(_ src: [UInt16], lut: [UInt8], into dst: inout [UInt8]) {
+    private func applyLUTTo16CPU(_ src: [UInt16], lut: [UInt8], into dst: inout [UInt8]) {
         let numPixels = imgWidth * imgHeight
         guard src.count >= numPixels, dst.count >= numPixels, lut.count >= 65536 else {
             print("[DicomPixelView] Error: buffer sizes invalid. Pixels expected \(numPixels), got src \(src.count) dst \(dst.count); LUT \(lut.count)")
             return
         }
-
-        // Try GPU (stub currently returns false)
-        let usedGPU = dst.withUnsafeMutableBufferPointer { outBuf in
-            src.withUnsafeBufferPointer { inBuf in
-                processPixelsGPU(inputPixels: inBuf.baseAddress!,
-                                 outputPixels: outBuf.baseAddress!,
-                                 pixelCount: numPixels,
-                                 winMin: winMin,
-                                 winMax: winMax)
-            }
-        }
-        if usedGPU {
-            if debugLogsEnabled { print("[DicomPixelView] GPU WL path used (Metal)") }
-            return
-        } else if debugLogsEnabled {
-            print("[DicomPixelView] GPU unavailable or failed, using CPU LUT fallback") }
 
         // Parallel CPU for large images
         if numPixels > 2_000_000 {
@@ -431,6 +422,19 @@ public final class DicomPixelView: UIView {
         }
     }
 
+    private func applyWindowTo16GPU(_ src: [UInt16], into dst: inout [UInt8]) -> Bool {
+        let numPixels = imgWidth * imgHeight
+        return dst.withUnsafeMutableBufferPointer { outBuf in
+            src.withUnsafeBufferPointer { inBuf in
+                processPixelsGPU(inputPixels: inBuf.baseAddress!,
+                                 outputPixels: outBuf.baseAddress!,
+                                 pixelCount: numPixels,
+                                 winMin: winMin,
+                                 winMax: winMax)
+            }
+        }
+    }
+
     // MARK: - Context helpers
 
     private func shouldReuseContext(width: Int, height: Int, samples: Int) -> Bool {
@@ -473,7 +477,7 @@ public final class DicomPixelView: UIView {
         guard accel.isAvailable,
               let device = accel.device,
               let pso = accel.windowLevelPipelineState,
-              let queue = device.makeCommandQueue()
+              let queue = accel.commandQueue
         else { return false }
         let t0 = enablePerfMetrics ? CFAbsoluteTimeGetCurrent() : 0
 
@@ -487,7 +491,10 @@ public final class DicomPixelView: UIView {
                                             length: inLen,
                                             options: .storageModeShared,
                                             deallocator: nil),
-              let outBuf = device.makeBuffer(length: outLen, options: .storageModeShared)
+              let outBuf = device.makeBuffer(bytesNoCopy: UnsafeMutableRawPointer(outputPixels),
+                                            length: outLen,
+                                            options: .storageModeShared,
+                                            deallocator: nil)
         else { return false }
 
         var uCount = UInt32(pixelCount)
@@ -495,34 +502,25 @@ public final class DicomPixelView: UIView {
         var uDenom = UInt32(width)
         var invert: Bool = false
 
-        guard let countBuf = device.makeBuffer(bytes: &uCount, length: MemoryLayout<UInt32>.stride, options: .storageModeShared),
-              let levelBuf = device.makeBuffer(bytes: &sWinMin, length: MemoryLayout<Int32>.stride, options: .storageModeShared),
-              let winBuf = device.makeBuffer(bytes: &uDenom, length: MemoryLayout<UInt32>.stride, options: .storageModeShared),
-              let invBuf = device.makeBuffer(bytes: &invert, length: MemoryLayout<Bool>.stride, options: .storageModeShared)
-        else { return false }
-
         guard let cmd = queue.makeCommandBuffer(),
               let enc = cmd.makeComputeCommandEncoder() else { return false }
 
         enc.setComputePipelineState(pso)
         enc.setBuffer(inBuf, offset: 0, index: 0)
         enc.setBuffer(outBuf, offset: 0, index: 1)
-        enc.setBuffer(countBuf, offset: 0, index: 2)
-        enc.setBuffer(levelBuf, offset: 0, index: 3)
-        enc.setBuffer(winBuf, offset: 0, index: 4)
-        enc.setBuffer(invBuf, offset: 0, index: 5)
+        enc.setBytes(&uCount, length: MemoryLayout<UInt32>.stride, index: 2)
+        enc.setBytes(&sWinMin, length: MemoryLayout<Int32>.stride, index: 3)
+        enc.setBytes(&uDenom, length: MemoryLayout<UInt32>.stride, index: 4)
+        enc.setBytes(&invert, length: MemoryLayout<Bool>.stride, index: 5)
 
-        let w = pso.threadExecutionWidth
-        let tpt = MTLSize(width: max(1, min(w, 256)), height: 1, depth: 1)
-        let threads = MTLSize(width: pixelCount, height: 1, depth: 1)
-        enc.dispatchThreads(threads, threadsPerThreadgroup: tpt)
+        let w = min(pso.threadExecutionWidth, pso.maxTotalThreadsPerThreadgroup)
+        let threadsPerThreadgroup = MTLSize(width: w, height: 1, depth: 1)
+        let threadsPerGrid = MTLSize(width: pixelCount, height: 1, depth: 1)
+        enc.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
         enc.endEncoding()
 
         cmd.commit()
         cmd.waitUntilCompleted()
-
-        let ptr = outBuf.contents()
-        memcpy(outputPixels, ptr, outLen)
         if enablePerfMetrics {
             let dt = CFAbsoluteTimeGetCurrent() - t0
             print("[PERF][DicomPixelView] GPU WL dt=\(String(format: "%.3f", dt*1000)) ms for \(pixelCount) px")
