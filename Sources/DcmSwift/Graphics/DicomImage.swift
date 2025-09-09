@@ -108,6 +108,10 @@ public class DicomImage {
         self.frames = collected
         configureMetadata()
 
+        if frames.isEmpty && self.dataset.hasElement(forTagName: "PixelData") {
+            loadPixelData()
+        }
+
         if pixelHandler == nil && numberOfFrames == 0 {
             numberOfFrames = frames.count
         }
