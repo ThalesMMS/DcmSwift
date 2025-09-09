@@ -527,7 +527,9 @@ public final class DicomPixelView: UIView {
         let width = max(1, winMax - winMin)
 
         let inLen = pixelCount * inComponents * MemoryLayout<UInt16>.stride
-        let outLen = pixelCount * samplesPerPixel * MemoryLayout<UInt8>.stride
+        let outComponents = (inComponents == 1) ? 1 : 4 // shader emits 1 byte for grayscale, 4 for RGB/RGBA
+        guard samplesPerPixel == outComponents else { return false }
+        let outLen = pixelCount * outComponents * MemoryLayout<UInt8>.stride
 
         let cache = MetalBufferCache.shared
         guard let inBuf = cache.buffer(length: inLen),
