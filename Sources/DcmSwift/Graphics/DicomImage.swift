@@ -329,20 +329,26 @@ public class DicomImage {
         let shouldInvert = (photometricInterpretation == "MONOCHROME1" && !inverted) ||
                            (photometricInterpretation == "MONOCHROME2" && inverted)
 
-#if canImport(Accelerate)
+        #if canImport(Accelerate)
         var floatPixels = [Float](repeating: 0, count: pixelCount)
         pixelData.withUnsafeBytes { rawBufferPointer in
             if self.bitsAllocated > 8 {
                 if self.pixelRepresentation == .Signed {
                     let src = rawBufferPointer.bindMemory(to: Int16.self)
-                    vDSP.integerToFloatingPoint(src, result: &floatPixels)
+                    floatPixels.withUnsafeMutableBufferPointer { dst in
+                        vDSP_vflt16(src.baseAddress!, 1, dst.baseAddress!, 1, vDSP_Length(pixelCount))
+                    }
                 } else {
                     let src = rawBufferPointer.bindMemory(to: UInt16.self)
-                    vDSP.integerToFloatingPoint(src, result: &floatPixels)
+                    floatPixels.withUnsafeMutableBufferPointer { dst in
+                        vDSP_vfltu16(src.baseAddress!, 1, dst.baseAddress!, 1, vDSP_Length(pixelCount))
+                    }
                 }
             } else {
                 let src = rawBufferPointer.bindMemory(to: UInt8.self)
-                vDSP.integerToFloatingPoint(src, result: &floatPixels)
+                floatPixels.withUnsafeMutableBufferPointer { dst in
+                    vDSP_vfltu8(src.baseAddress!, 1, dst.baseAddress!, 1, vDSP_Length(pixelCount))
+                }
             }
         }
 
@@ -367,7 +373,7 @@ public class DicomImage {
         }
 
         vDSP_vfixu8(floatPixels, 1, &buffer8bit, 1, vDSP_Length(pixelCount))
-#else
+        #else
         let wwD = Double(ww)
         let slopeD = Double(slope)
         let interceptD = Double(intercept)
@@ -415,7 +421,7 @@ public class DicomImage {
                 buffer8bit[i] = 255 - buffer8bit[i]
             }
         }
-#endif
+        #endif
         
         guard let provider = CGDataProvider(data: Data(buffer8bit) as CFData) else { return nil }
         

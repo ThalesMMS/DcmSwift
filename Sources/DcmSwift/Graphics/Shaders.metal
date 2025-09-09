@@ -12,14 +12,16 @@ kernel void windowLevelKernel(
     constant uint&         denom          [[ buffer(4) ]],
     constant bool&         invert         [[ buffer(5) ]],
     constant uint&         inComponents   [[ buffer(6) ]],
+    constant uint&         outComponents  [[ buffer(7) ]],
     uint                   gid            [[ thread_position_in_grid ]]
 ) {
     if (gid >= count) return;
 
     uint inBase = gid * inComponents;
-    uint outBase = gid * 4; // always produce RGBA (alpha filled if needed)
+    uint outBase = gid * outComponents;
 
-    for (uint c = 0; c < inComponents; ++c) {
+    uint comp = min(inComponents, outComponents);
+    for (uint c = 0; c < comp; ++c) {
         ushort src = inPixels[inBase + c];
         // Match CPU path exactly: clamp(src - winMin, 0, denom) * 255 / denom
         int val = int(src) - winMin;
@@ -30,7 +32,7 @@ kernel void windowLevelKernel(
         outPixels[outBase + c] = v;
     }
 
-    if (inComponents < 4) {
-        outPixels[outBase + 3] = 255; // opaque alpha for RGB input
+    if (outComponents > 3 && comp < outComponents) {
+        outPixels[outBase + 3] = 255; // opaque alpha when writing RGBA
     }
 }
