@@ -235,7 +235,7 @@ public class DicomFile {
         let inputStream = DicomInputStream(filePath: filepath)
         
         do {
-            if let dataset = try inputStream.readDataset() {
+            if let dataset = try inputStream.readDataset(headerOnly: false, withoutPixelData: false) {
                 hasPreamble     = inputStream.hasPreamble
                 self.dataset    = dataset
                 
@@ -246,6 +246,7 @@ public class DicomFile {
                     }
                 }
                 
+                inputStream.close()
                 return true
             }
         } catch StreamError.cannotOpenStream(let message) {
@@ -260,6 +261,7 @@ public class DicomFile {
             Logger.error("Unknow error while reading: \(String(describing: filepath))")
         }
                 
+        inputStream.close()
         return false
     }
 }

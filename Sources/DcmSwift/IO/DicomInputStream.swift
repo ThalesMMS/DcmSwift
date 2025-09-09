@@ -116,14 +116,9 @@ public class DicomInputStream: OffsetInputStream {
                 order = .LittleEndian
             }
             
-            if let newElement = readDataElement(dataset: dataset, parent: nil, vrMethod: vrMethod, order: order, pixelDataHandler: pixelDataHandler) {
+            if let newElement = readDataElement(dataset: dataset, parent: nil, vrMethod: vrMethod, order: order, pixelDataHandler: pixelDataHandler, skipPixelData: withoutPixelData) {
                 // header only option
                 if headerOnly && newElement.tag.group != DicomConstants.metaInformationGroup {
-                    break
-                }
-
-                // without pixel data option
-                if !headerOnly && withoutPixelData && newElement.tagCode() == "7fe00010" {
                     break
                 }
 
@@ -332,7 +327,8 @@ public class DicomInputStream: OffsetInputStream {
         vrMethod:VRMethod    = .Explicit,
         order:ByteOrder      = .LittleEndian,
         inTag:DataTag?                      = nil,
-        pixelDataHandler: ((Data) -> Bool)? = nil
+        pixelDataHandler: ((Data) -> Bool)? = nil,
+        skipPixelData: Bool = false
     ) -> DataElement? {
         let startOffset = offset
         
@@ -379,6 +375,21 @@ public class DicomInputStream: OffsetInputStream {
         }
         
         // read value data
+        // Special-case PixelData skipping before any materialization
+        let isPixelData = (tag.group.lowercased() == "7fe0" && tag.element.lowercased() == "0010") || element.name == "PixelData"
+        if isPixelData && skipPixelData {
+            if element.length >= 0 {
+                // Known-length native Pixel Data: skip bytes
+                forward(by: Int(element.length))
+                return nil
+            } else {
+                // Encapsulated pixel data: stream and discard fragments
+                _ = readPixelSequence(tag: tag, byteOrder: order, handler: { _ in true })
+                // Consume sequence delimitation length (4 bytes)
+                forward(by: 4)
+                return nil
+            }
+        }
         // if OB/OW but not in prefix header
         if tag.group != "0002" && (element.vr == .OW || element.vr == .OB) {
             if element.name == "PixelData" && element.length == -1 {
@@ -403,12 +414,30 @@ public class DicomInputStream: OffsetInputStream {
                     return nil
                 }
 
+            } else if element.name == "PixelData", let handler = pixelDataHandler, element.length > 0 {
+                // Native (known-length) Pixel Data with handler: stream in fixed-size chunks
+                var remaining = Int(element.length)
+                let chunkCap = min(remaining, 1 << 20) // up to 1 MiB
+                var scratch = Data(count: chunkCap)
+                while remaining > 0 {
+                    let n = min(remaining, scratch.count)
+                    let readCount = scratch.withUnsafeMutableBytes { ptr -> Int in
+                        guard let base = ptr.bindMemory(to: UInt8.self).baseAddress else { return 0 }
+                        return stream.read(base, maxLength: n)
+                    }
+                    if readCount <= 0 { break }
+                    offset += readCount
+                    remaining -= readCount
+                    let chunk = scratch.prefix(readCount)
+                    if !handler(chunk) { break }
+                }
+                return nil
             } else {
                 element.data = readValue(length: Int(element.length))
             }
         }
         else if element.vr == .SQ {
-            guard let sequence = readDataSequence(tag:element.tag, length: Int(element.length), byteOrder:order, parent: element, pixelDataHandler: pixelDataHandler) else {
+            guard let sequence = readDataSequence(tag:element.tag, length: Int(element.length), byteOrder:order, parent: element, pixelDataHandler: pixelDataHandler, skipPixelData: skipPixelData) else {
                 Logger.error("Cannot read Sequence \(tag) at \(self.offset)")
                 return nil
             }
@@ -453,7 +482,8 @@ public class DicomInputStream: OffsetInputStream {
         length:Int,
         byteOrder:ByteOrder,
         parent: DataElement? = nil,
-        pixelDataHandler: ((Data) -> Bool)? = nil
+        pixelDataHandler: ((Data) -> Bool)? = nil,
+        skipPixelData: Bool = false
     ) -> DataSequence? {
         let sequence:DataSequence = DataSequence(withTag:tag, parent: parent)
         var bytesRead = 0
@@ -492,7 +522,7 @@ public class DicomInputStream: OffsetInputStream {
                             break
                         }
                                                 
-                        guard let newElement = readDataElement(dataset: self.dataset, parent: item, vrMethod: vrMethod, order: byteOrder, inTag: itemTag, pixelDataHandler: pixelDataHandler) else {
+                        guard let newElement = readDataElement(dataset: self.dataset, parent: item, vrMethod: vrMethod, order: byteOrder, inTag: itemTag, pixelDataHandler: pixelDataHandler, skipPixelData: skipPixelData) else {
                             Logger.debug("Cannot read element in sequence \(tag) at \(self.offset)")
                             return nil
                         }
@@ -508,7 +538,7 @@ public class DicomInputStream: OffsetInputStream {
                     while(itemLength > itemBytesRead) {
                         let oldOffset = offset
                         
-                        guard let newElement = readDataElement(dataset: self.dataset, parent: item, vrMethod: vrMethod, order: byteOrder, pixelDataHandler: pixelDataHandler) else {
+                        guard let newElement = readDataElement(dataset: self.dataset, parent: item, vrMethod: vrMethod, order: byteOrder, pixelDataHandler: pixelDataHandler, skipPixelData: skipPixelData) else {
                             Logger.debug("Cannot read element in sequence \(tag) at \(self.offset)")
                             return nil
                         }
@@ -557,7 +587,7 @@ public class DicomInputStream: OffsetInputStream {
                                 break
                             }
                                                         
-                            guard let newElement = readDataElement(dataset: self.dataset, parent: item, vrMethod: vrMethod, order: byteOrder, inTag: itemTag, pixelDataHandler: pixelDataHandler) else {
+                            guard let newElement = readDataElement(dataset: self.dataset, parent: item, vrMethod: vrMethod, order: byteOrder, inTag: itemTag, pixelDataHandler: pixelDataHandler, skipPixelData: skipPixelData) else {
                                 Logger.debug("Cannot read element in sequence \(tag) at \(self.offset)")
                                 return nil
                             }
@@ -572,7 +602,7 @@ public class DicomInputStream: OffsetInputStream {
                         while(itemLength > itemBytesRead) {
                             let oldOffset = offset
                             
-                            guard let newElement = readDataElement(dataset: self.dataset, parent: item, vrMethod: vrMethod, order: byteOrder, pixelDataHandler: pixelDataHandler) else {
+                            guard let newElement = readDataElement(dataset: self.dataset, parent: item, vrMethod: vrMethod, order: byteOrder, pixelDataHandler: pixelDataHandler, skipPixelData: skipPixelData) else {
                                 Logger.debug("Cannot read element in sequence \(tag) at \(self.offset)")
                                 return nil
                             }
@@ -662,12 +692,27 @@ public class DicomInputStream: OffsetInputStream {
             item.length = Int(itemLength)
 
             if itemLength > 0 {
-                if let data = read(length: Int(itemLength)) {
-                    if let handler = handler {
-                        if !handler(data) {
-                            return pixelSequence
+                if let handler = handler {
+                    // Stream the item in fixed-size chunks without materializing the full Data
+                    var remaining = Int(itemLength)
+                    let chunkCap = min(remaining, 1 << 20) // up to 1 MiB
+                    var scratch = Data(count: chunkCap)
+                    while remaining > 0 {
+                        let n = min(remaining, scratch.count)
+                        let readCount = scratch.withUnsafeMutableBytes { ptr -> Int in
+                            guard let base = ptr.bindMemory(to: UInt8.self).baseAddress else { return 0 }
+                            return stream.read(base, maxLength: n)
                         }
-                    } else {
+                        if readCount <= 0 { break }
+                        offset += readCount
+                        remaining -= readCount
+                        // Pass a view of the chunk to the handler (copies header only)
+                        let chunk = scratch.prefix(readCount)
+                        if !handler(chunk) { return pixelSequence }
+                    }
+                } else {
+                    // No handler: keep previous behavior and store full item
+                    if let data = read(length: Int(itemLength)) {
                         item.data = data
                     }
                 }
@@ -686,7 +731,6 @@ public class DicomInputStream: OffsetInputStream {
                 itemTag = DataTag(withData: read(length: 4)!, byteOrder: byteOrder)
             }
         }
-
         return pixelSequence
     }
 }

@@ -36,9 +36,9 @@ public class OffsetInputStream {
      */
     public init(filePath:String) {
         let url = URL(fileURLWithPath: filePath)
-
-        // OPTIMIZATION: Memory-map file for faster sequential access when possible
-        if let data = try? Data(contentsOf: url, options: .mappedIfSafe) {
+        // Make memory mapping opt-in via env var to avoid Anonymous VM spikes on batch import
+        let shouldMap = ProcessInfo.processInfo.environment["DCMSWIFT_MAP_IF_SAFE"] == "1"
+        if shouldMap, let data = try? Data(contentsOf: url, options: .mappedIfSafe) {
             stream     = InputStream(data: data)
             backstream = InputStream(data: data)
             total      = data.count
@@ -53,8 +53,8 @@ public class OffsetInputStream {
     Init a DicomInputStream with a file URL
     */
     public init(url:URL) {
-        // OPTIMIZATION: Attempt to memory-map the file
-        if let data = try? Data(contentsOf: url, options: .mappedIfSafe) {
+        let shouldMap = ProcessInfo.processInfo.environment["DCMSWIFT_MAP_IF_SAFE"] == "1"
+        if shouldMap, let data = try? Data(contentsOf: url, options: .mappedIfSafe) {
             stream     = InputStream(data: data)
             backstream = InputStream(data: data)
             total      = data.count
@@ -91,8 +91,8 @@ public class OffsetInputStream {
      Closes the stream
      */
     public func close() {
-        stream.close()
-        backstream.close()
+        stream?.close(); backstream?.close()
+        stream = nil; backstream = nil
     }
 
     
@@ -136,7 +136,20 @@ public class OffsetInputStream {
      - Parameter bytes: the number of bytes to jump in the stream
      */
     internal func forward(by bytes: Int) {
-        // read into the void...
-        _ = read(length: bytes)
+        // Consume bytes in fixed-size chunks to avoid allocating huge Data buffers.
+        guard bytes > 0 else { return }
+        var remaining = bytes
+        let chunkSize = min(remaining, 1 << 20) // up to 1 MiB
+        var scratch = Data(count: chunkSize)
+        while remaining > 0 {
+            let n = min(remaining, scratch.count)
+            let readCount = scratch.withUnsafeMutableBytes { ptr -> Int in
+                guard let base = ptr.bindMemory(to: UInt8.self).baseAddress else { return 0 }
+                return stream.read(base, maxLength: n)
+            }
+            if readCount <= 0 { break }
+            remaining -= readCount
+            offset += readCount
+        }
     }
 }

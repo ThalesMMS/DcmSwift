@@ -39,6 +39,17 @@ public enum DICOMModality: Sendable {
     case sc
     case pt
     case nm
+    // Additional modalities recognized by the app
+    case au
+    case dr
+    case bmd
+    case es
+    case rg
+    case sr
+    case vl
+    case xa
+    case px
+    case ot
     case other
 }
 
@@ -97,7 +108,7 @@ public struct WindowLevelCalculator: Sendable {
                 ServiceWindowLevelPreset(name: "Brain T2", width: 1200, level: 600, modality: .mr),
                 ServiceWindowLevelPreset(name: "Spine", width: 800, level: 400, modality: .mr)
             ]
-        case .cr, .dx:
+        case .cr, .dx, .dr, .rg, .xa:
             presets = [
                 ServiceWindowLevelPreset(name: "Chest", width: 2000, level: 1000, modality: modality),
                 ServiceWindowLevelPreset(name: "Bone", width: 3000, level: 1500, modality: modality),
@@ -179,4 +190,3 @@ public struct WindowLevelCalculator: Sendable {
         return (huValue - rescaleIntercept) / rescaleSlope
     }
 }
-

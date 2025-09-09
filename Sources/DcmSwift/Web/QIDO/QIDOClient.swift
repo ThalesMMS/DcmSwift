@@ -75,8 +75,18 @@ public actor QIDOClient {
         if let accessionNumber = accessionNumber {
             queryItems.append(URLQueryItem(name: "AccessionNumber", value: accessionNumber))
         }
-        if let modality = modality {
-            queryItems.append(URLQueryItem(name: "ModalitiesInStudy", value: modality))
+        if let modality = modality, !modality.isEmpty {
+            // Support multi-modality by splitting and adding repeated params
+            let tokens = modality.uppercased()
+                .replacingOccurrences(of: ",", with: " ")
+                .replacingOccurrences(of: "\\", with: " ")
+                .split{ !$0.isLetter }
+                .map { String($0) }
+            if tokens.count > 1 {
+                for m in tokens { queryItems.append(URLQueryItem(name: "ModalitiesInStudy", value: m)) }
+            } else {
+                queryItems.append(URLQueryItem(name: "ModalitiesInStudy", value: modality))
+            }
         }
         if let referringPhysicianName = referringPhysicianName {
             queryItems.append(URLQueryItem(name: "ReferringPhysicianName", value: referringPhysicianName))

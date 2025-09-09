@@ -32,11 +32,22 @@ public class CGetRQ: DataTF {
      FIXED: Now sends command and query dataset in the same PDU to ensure proper operation.
      */
     public override func data() -> Data? {
-        // 1. Get presentation context, abstract syntax, and command transfer syntax
-        guard let pcID = association.acceptedPresentationContexts.keys.first,
+        // 1. Get presentation context for Study/Patient Root GET, abstract syntax, and command transfer syntax
+        let studyAS = DicomConstants.StudyRootQueryRetrieveInformationModelGET
+        let patientAS = DicomConstants.PatientRootQueryRetrieveInformationModelGET
+        func findAcceptedPC(for asuid: String) -> UInt8? {
+            for (ctxID, _) in association.acceptedPresentationContexts {
+                if let proposed = association.presentationContexts[ctxID], proposed.abstractSyntax == asuid {
+                    return ctxID
+                }
+            }
+            return nil
+        }
+        guard let pcID = findAcceptedPC(for: studyAS) ?? findAcceptedPC(for: patientAS),
               let spc = association.presentationContexts[pcID],
-              let commandTransferSyntax = TransferSyntax(TransferSyntax.implicitVRLittleEndian),
-              let abstractSyntax = spc.abstractSyntax else {
+              let abstractSyntax = spc.abstractSyntax,
+              let commandTransferSyntax = TransferSyntax(TransferSyntax.implicitVRLittleEndian) else {
+            Logger.error("C-GET: No accepted Presentation Context for Study/Patient Root GET")
             return nil
         }
 
@@ -51,10 +62,10 @@ public class CGetRQ: DataTF {
         _ = commandDataset.set(value: UInt16(0), forTagName: "Priority") // MEDIUM
 
         if hasDataset {
-            // 0x0101 indicates that a dataset follows
-            _ = commandDataset.set(value: UInt16(0x0101), forTagName: "CommandDataSetType")
+            // Per PS 3.7, 0x0101 means no dataset; anything else (e.g., 0x0000) means dataset follows
+            _ = commandDataset.set(value: UInt16(0x0000), forTagName: "CommandDataSetType")
         } else {
-            _ = commandDataset.set(value: UInt16(0x0102), forTagName: "CommandDataSetType")
+            _ = commandDataset.set(value: UInt16(0x0101), forTagName: "CommandDataSetType")
         }
 
         // Insert placeholder for CommandGroupLength at the beginning

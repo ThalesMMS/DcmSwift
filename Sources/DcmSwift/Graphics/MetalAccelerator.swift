@@ -27,7 +27,8 @@ public final class MetalAccelerator {
         // Allow opt-out via env/UD flag
         if ProcessInfo.processInfo.environment["DCMSWIFT_DISABLE_METAL"] == "1" {
             device = nil; library = nil; windowLevelPipelineState = nil; commandQueue = nil
-            if debug { print("[MetalAccelerator] Disabled via DCMSWIFT_DISABLE_METAL=1") }
+            // Loud, unconditional log to make it obvious Metal path is off
+            print("⚠️ [DcmSwift][Metal] Metal desativado por DCMSWIFT_DISABLE_METAL=1. Usando fallback de CPU.")
             return
         }
 

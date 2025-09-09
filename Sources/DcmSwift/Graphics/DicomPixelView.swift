@@ -280,95 +280,8 @@ public final class DicomPixelView: UIView {
             cachedImageData = rgba
             if debugLogsEnabled { print("[DicomPixelView] path=RGBA passthrough") }
         } else if let src8 = pix8 {
-            if debugLogsEnabled { print("[DicomPixelView] path=8-bit CPU WL (async)") }
-            // Compute on a background task using the concurrent Accelerate/GCD implementation,
-            // then publish result on the main actor without passing inout across await.
-            let width = imgWidth
-            let height = imgHeight
-            let minV = winMin
-            let maxV = winMax
-            let start = enablePerfMetrics ? CFAbsoluteTimeGetCurrent() : 0
-            let reuseGray = colorspace
-            if #available(iOS 13.0, *) {
-            Task.detached(priority: .userInitiated) { [weak self] in
-                var out = [UInt8](repeating: 0, count: width * height)
-                do {
-                    try await applyWindowTo8Concurrent(src: src8, width: width, height: height, winMin: minV, winMax: maxV, into: &out)
-                } catch {
-                    // Fallback to synchronous mapping on failure (no actor access)
-                    let count = width * height
-                    let denom = max(maxV - minV, 1)
-                    src8.withUnsafeBufferPointer { inBuf in
-                        out.withUnsafeMutableBufferPointer { outBuf in
-                            let inBase = inBuf.baseAddress!
-                            let outBase = outBuf.baseAddress!
-                            var i = 0
-                            let fastEnd = count & ~3
-                            while i < fastEnd {
-                                let v0 = Int(inBase[i]);    let c0 = min(max(v0 - minV, 0), denom)
-                                let v1 = Int(inBase[i+1]);  let c1 = min(max(v1 - minV, 0), denom)
-                                let v2 = Int(inBase[i+2]);  let c2 = min(max(v2 - minV, 0), denom)
-                                let v3 = Int(inBase[i+3]);  let c3 = min(max(v3 - minV, 0), denom)
-                                outBase[i]   = UInt8(c0 * 255 / denom)
-                                outBase[i+1] = UInt8(c1 * 255 / denom)
-                                outBase[i+2] = UInt8(c2 * 255 / denom)
-                                outBase[i+3] = UInt8(c3 * 255 / denom)
-                                i += 4
-                            }
-                            while i < count {
-                                let v = Int(inBase[i])
-                                let clamped = min(max(v - minV, 0), denom)
-                                outBase[i] = UInt8(clamped * 255 / denom)
-                                i += 1
-                            }
-                        }
-                    }
-                }
-                await MainActor.run {
-                    guard let self = self else { return }
-                    self.cachedImageData = out
-                    self.cachedImageDataValid = true
-                    // Build CGImage from cached buffer
-                    let cs = reuseGray ?? CGColorSpaceCreateDeviceGray()
-                    out.withUnsafeMutableBytes { buffer in
-                        guard let base = buffer.baseAddress else { return }
-                        let bytesPerRow = width * self.samplesPerPixel
-                        if self.samplesPerPixel == 1 {
-                            if self.bitmapContext == nil || self.bitmapContext!.width != width || self.bitmapContext!.height != height {
-                                self.bitmapContext = CGContext(data: nil,
-                                                               width: width,
-                                                               height: height,
-                                                               bitsPerComponent: 8,
-                                                               bytesPerRow: bytesPerRow,
-                                                               space: cs,
-                                                               bitmapInfo: CGImageAlphaInfo.none.rawValue)
-                            }
-                            if let ctx = self.bitmapContext, let data = ctx.data {
-                                memcpy(data, base, width * height)
-                                self.bitmapImage = ctx.makeImage()
-                            } else {
-                                self.bitmapContext = nil
-                                self.bitmapImage = nil
-                            }
-                        } else {
-                            // RGBA path not expected for src8
-                            self.bitmapContext = nil
-                            self.bitmapImage = nil
-                        }
-                    }
-                    if self.enablePerfMetrics {
-                        let dt = CFAbsoluteTimeGetCurrent() - start
-                        print("[PERF][DicomPixelView] WL8 async dt=\(String(format: "%.3f", dt*1000)) ms, size=\(width)x\(height)")
-                    }
-                    self.setNeedsDisplay()
-                }
-            }
-            } else {
-                // Fallback to synchronous mapping on older OS
-                applyWindowTo8(src8, into: &cachedImageData!)
-            }
-            // Defer image build to async completion
-            return
+            if debugLogsEnabled { print("[DicomPixelView] path=8-bit CPU WL") }
+            applyWindowTo8(src8, into: &cachedImageData!)
         } else if let src16 = pix16 {
             // Adopting the logic from the 'codex' branch for 16-bit processing.
             if let extLUT = lut16 {
@@ -609,6 +522,27 @@ public final class DicomPixelView: UIView {
         cachedImageData = nil
         cachedImageDataValid = false
         resetImage()
+    }
+
+    // MARK: - Rendered image accessors
+
+    /// Return the currently rendered CGImage (if available).
+    public func currentCGImage() -> CGImage? { bitmapImage }
+
+    /// Present a pre-rendered CGImage directly, skipping window/level computation.
+    /// - Parameters:
+    ///   - image: The CGImage to display.
+    ///   - samplesPerPixel: 1 for grayscale, 4 for RGBA.
+    public func setRenderedCGImage(_ image: CGImage, samplesPerPixel: Int) {
+        self.samplesPerPixel = samplesPerPixel
+        self.colorspace = (samplesPerPixel == 1) ? CGColorSpaceCreateDeviceGray() : CGColorSpaceCreateDeviceRGB()
+        self.lastSamplesPerPixel = samplesPerPixel
+        self.lastContextWidth = image.width
+        self.lastContextHeight = image.height
+        self.bitmapContext = nil
+        self.bitmapImage = image
+        self.cachedImageDataValid = true
+        setNeedsDisplay()
     }
 
     /// Rough memory usage estimate for current buffers (bytes).

@@ -23,6 +23,7 @@ import Foundation
  http://dicom.nema.org/dicom/2013/output/chtml/part08/sect_9.3.html#table_9-22
  */
 public class DataTF: PDUMessage {
+    public var contextID: UInt8?
     
     /// Full name of DataTF PDU
     public override func messageName() -> String {
@@ -34,100 +35,59 @@ public class DataTF: PDUMessage {
     /// presentation-data-value contains : item length, presentation context id, presentation-data-value
     override public func decodeData(data: Data) -> DIMSEStatus.Status {
         _ = super.decodeData(data: data)
-                                        
-        // read PDV length
-        guard let pdvLength = stream.read(length: 4)?.toInt32(byteOrder: .BigEndian) else {
-            Logger.error("Cannot read PDV Length")
-            return .Refused
-        }
-        
-        self.pdvLength = Int(pdvLength)
-                                
-        // read context
-        guard let _ = stream.read(length: 1)?.toInt8(byteOrder: .BigEndian) else {
-            //Logger.warning("Cannot read context")
-            return .Refused
-        }
-        
-        // read flags
-        guard let flags = stream.read(length: 1)?.toInt8(byteOrder: .BigEndian) else {
-            Logger.error("Cannot read flags")
-            return .Refused
-        }
-        
-        self.flags = UInt8(flags)
-                                
-        // command fragment
-        if self.flags == 0x3 {
-            // read dataset data
-            guard let commandData = stream.read(length: Int(pdvLength) - 2) else {
-                Logger.error("Cannot read dataset data")
-                return .Pending
-            }
-            
-            let dis = DicomInputStream(data: commandData)
-            
-            // read command dataset
-            guard let commandDataset = try? dis.readDataset() else {
-                Logger.error("Cannot read command dataset")
-                return .Refused
-            }
-            
-            self.commandDataset = commandDataset
-                                    
-            guard let command = commandDataset.element(forTagName: "CommandField") else {
-                Logger.error("Cannot read CommandField in command Dataset")
-                return .Refused
-            }
+        receivedData.removeAll(keepingCapacity: true)
 
-            let c = command.data.toUInt16(byteOrder: .LittleEndian)
+        func readOnePDV() -> Bool {
+            guard let pdvLength = stream.read(length: 4)?.toInt32(byteOrder: .BigEndian) else {
+                return false
+            }
+            self.pdvLength = Int(pdvLength)
+            guard let ctx = stream.read(length: 1)?.toInt8(byteOrder: .BigEndian) else { return false }
+            self.contextID = UInt8(bitPattern: ctx)
+            guard let f = stream.read(length: 1)?.toInt8(byteOrder: .BigEndian) else { return false }
+            self.flags = UInt8(f)
+            let isCommand = (self.flags & 0x01) == 0x01
+            guard let payload = stream.read(length: Int(pdvLength) - 2) else { return false }
 
-            guard let commandField = CommandField(rawValue: c) else {
-                Logger.error("Cannot read CommandField in command Dataset")
-                return .Refused
-            }
-            
-            self.commandField = commandField
-            
-            guard let commandDataSetType = commandDataset.integer16(forTag: "CommandDataSetType") else {
-                Logger.error("Cannot read Command Data Set Type")
-                return .Refused
-            }
-            
-            self.commandDataSetType = commandDataSetType
-            
-            if let s = commandDataset.element(forTagName: "Status") {
-                if let ss = DIMSEStatus.Status(rawValue: s.data.toUInt16(byteOrder: .LittleEndian)) {
-                    self.dimseStatus = DIMSEStatus(status: ss, command: commandField)
-                    
-                    return ss
+            if isCommand {
+                let dis = DicomInputStream(data: payload)
+                guard let commandDataset = try? dis.readDataset() else { return false }
+                self.commandDataset = commandDataset
+                if let cmd = commandDataset.element(forTagName: "CommandField") {
+                    let c = cmd.data.toUInt16(byteOrder: .LittleEndian)
+                    self.commandField = CommandField(rawValue: c)
                 }
+                // Capture MessageID for proper RSP linking
+                if let mid = commandDataset.integer16(forTag: "MessageID") {
+                    self.messageID = UInt16(mid)
+                }
+                if let s = commandDataset.element(forTagName: "Status") {
+                    if let ss = DIMSEStatus.Status(rawValue: s.data.toUInt16(byteOrder: .LittleEndian)) {
+                        self.dimseStatus = DIMSEStatus(status: ss, command: self.commandField ?? .NONE)
+                    }
+                }
+                if let cdst = commandDataset.integer16(forTag: "CommandDataSetType") {
+                    self.commandDataSetType = cdst
+                }
+            } else {
+                // Data PDV; append
+                receivedData.append(payload)
+                // Keep Pending until a final command provides definitive status
+                self.dimseStatus = DIMSEStatus(status: .Pending, command: .NONE)
             }
+            return true
         }
-        else if self.flags == 0x2 {
-            // last fragment
-            self.dimseStatus = DIMSEStatus(status: .Success, command: .NONE)
-            
-            // read data left
-            guard let data = stream.read(length: Int(pdvLength) - 2) else {
-                Logger.error("Cannot read data")
-                return .Refused
-            }
-            
-            receivedData = data
+
+        // Read all PDVs present in this P-DATA-TF
+        var any = false
+        while stream.readableBytes > 0 {
+            if !readOnePDV() { break }
+            any = true
         }
-        else if self.flags == 0x0 {
-            // more data fragment coming
-            self.dimseStatus = DIMSEStatus(status: .Pending, command: .NONE)
-            
-            guard let data = stream.read(length: Int(pdvLength) - 2) else {
-                Logger.error("Cannot read data")
-                return .Refused
-            }
-            
-            receivedData = data
-        }
-        
-        return .Success
+        if !any { return .Refused }
+
+        // If we already have a status from a command PDV, return it; otherwise Pending
+        if let ds = dimseStatus { return ds.status }
+        return .Pending
     }
 }

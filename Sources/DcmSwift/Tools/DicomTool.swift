@@ -56,6 +56,9 @@ public final class DicomTool {
             case "MR": modality = .mr
             case "CR": modality = .cr
             case "DX": modality = .dx
+            case "DR": modality = .dr
+            case "RG": modality = .rg
+            case "XA": modality = .xa
             case "US": modality = .us
             case "MG": modality = .mg
             case "RF": modality = .rf
@@ -63,6 +66,13 @@ public final class DicomTool {
             case "SC": modality = .sc
             case "PT": modality = .pt
             case "NM": modality = .nm
+            case "AU": modality = .au
+            case "BMD": modality = .bmd
+            case "ES": modality = .es
+            case "SR": modality = .sr
+            case "VL": modality = .vl
+            case "PX": modality = .px
+            case "OT": modality = .ot
             default: modality = .other
             }
             let calculator = WindowLevelCalculator()

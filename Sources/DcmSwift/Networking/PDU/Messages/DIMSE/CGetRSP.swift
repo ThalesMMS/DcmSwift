@@ -30,7 +30,10 @@ public class CGetRSP: DataTF {
     }
     
     public override func messageInfos() -> String {
-        var info = "\(dimseStatus.status)"
+        let statusText: String = {
+            if let s = dimseStatus?.status { return "\(s)" } else { return "Pending" }
+        }()
+        var info = statusText
         if let remaining = numberOfRemainingSuboperations {
             info += " (Remaining: \(remaining)"
             if let completed = numberOfCompletedSuboperations {
@@ -49,6 +52,10 @@ public class CGetRSP: DataTF {
     
     override public func decodeData(data: Data) -> DIMSEStatus.Status {
         let status = super.decodeData(data: data)
+        // Ensure we always have a dimseStatus to avoid logging crashes
+        if dimseStatus == nil {
+            dimseStatus = DIMSEStatus(status: .Pending, command: .C_GET_RSP)
+        }
         
         // Extract sub-operation counters from command dataset
         if let commandDataset = self.commandDataset {

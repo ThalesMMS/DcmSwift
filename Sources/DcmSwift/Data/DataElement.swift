@@ -25,8 +25,8 @@ public class DataElement : DicomObject {
     public var endOffset:Int        = 0
     public var length:Int           = 0
     
-    public var parent:DataElement?
-    public var dataset:DataSet?
+    public weak var parent:DataElement?
+    public weak var dataset:DataSet?
     public var tag:DataTag
     public var data:Data!
     

@@ -27,29 +27,50 @@ public class CStoreRSP: DataTF {
     }
     
     public override func data() -> Data? {
-        if let pc = self.association.acceptedPresentationContexts.values.first,
-           let transferSyntax = TransferSyntax(TransferSyntax.implicitVRLittleEndian) {
+        // Prefer replying on the same Presentation Context as the incoming C-STORE-RQ
+        var pcToUse: PresentationContext?
+        if let reqDataTF = requestMessage as? DataTF, let ctx = reqDataTF.contextID {
+            pcToUse = self.association.acceptedPresentationContexts[ctx]
+        }
+        if pcToUse == nil { pcToUse = self.association.acceptedPresentationContexts.values.first }
+        
+        // Fallbacks to ensure we always encode a response
+        guard let pc = pcToUse ?? self.association.acceptedPresentationContexts.values.first else {
+            Logger.error("C-STORE-RSP: No presentation context available to reply")
+            return nil
+        }
+        guard let transferSyntax = TransferSyntax(TransferSyntax.implicitVRLittleEndian) else {
+            Logger.error("C-STORE-RSP: Could not resolve command transfer syntax")
+            return nil
+        }
             let commandDataset = DataSet()
             _ = commandDataset.set(value: CommandField.C_STORE_RSP.rawValue, forTagName: "CommandField")
-            _ = commandDataset.set(value: pc.abstractSyntax as Any, forTagName: "AffectedSOPClassUID")
+            // Prefer SOP Class UID from the request; AC presentation contexts may have nil abstractSyntax
+            var affectedSOPClass = pc.abstractSyntax
             
             if let request = self.requestMessage {
                 _ = commandDataset.set(value: request.messageID, forTagName: "MessageIDBeingRespondedTo")
+                if let reqCmd = request.commandDataset {
+                    if affectedSOPClass == nil {
+                        affectedSOPClass = reqCmd.string(forTag: "AffectedSOPClassUID") ?? reqCmd.string(forTag: "SOPClassUID")
+                    }
+                    if let iuid = reqCmd.string(forTag: "AffectedSOPInstanceUID") ?? reqCmd.string(forTag: "SOPInstanceUID") {
+                        _ = commandDataset.set(value: iuid, forTagName: "AffectedSOPInstanceUID")
+                    }
+                }
             }
+            if let asuid = affectedSOPClass { _ = commandDataset.set(value: asuid, forTagName: "AffectedSOPClassUID") }
             _ = commandDataset.set(value: UInt16(257), forTagName: "CommandDataSetType")
             _ = commandDataset.set(value: UInt16(0), forTagName: "Status")
             
             let pduData = PDUData(
                 pduType: self.pduType,
                 commandDataset: commandDataset,
-                abstractSyntax: pc.abstractSyntax,
+                abstractSyntax: affectedSOPClass ?? "1.2.840.10008.1.1", // Verification SOP as last resort
                 transferSyntax: transferSyntax,
                 pcID: pc.contextID, flags: 0x03)
             
             return pduData.data()
-        }
-        
-        return nil
     }
     
     
