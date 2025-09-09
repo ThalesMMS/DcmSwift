@@ -35,18 +35,34 @@ public class OffsetInputStream {
      Init a DicomInputStream with a file path
      */
     public init(filePath:String) {
-        stream      = InputStream(fileAtPath: filePath)
-        backstream  = InputStream(fileAtPath: filePath)
-        total       = Int(DicomFile.fileSize(path: filePath))
+        let url = URL(fileURLWithPath: filePath)
+
+        // OPTIMIZATION: Memory-map file for faster sequential access when possible
+        if let data = try? Data(contentsOf: url, options: .mappedIfSafe) {
+            stream     = InputStream(data: data)
+            backstream = InputStream(data: data)
+            total      = data.count
+        } else {
+            stream      = InputStream(fileAtPath: filePath)
+            backstream  = InputStream(fileAtPath: filePath)
+            total       = Int(DicomFile.fileSize(path: filePath))
+        }
     }
-    
+
     /**
     Init a DicomInputStream with a file URL
     */
     public init(url:URL) {
-        stream      = InputStream(url: url)
-        backstream  = InputStream(url: url)
-        total       = Int(DicomFile.fileSize(path: url.path))
+        // OPTIMIZATION: Attempt to memory-map the file
+        if let data = try? Data(contentsOf: url, options: .mappedIfSafe) {
+            stream     = InputStream(data: data)
+            backstream = InputStream(data: data)
+            total      = data.count
+        } else {
+            stream      = InputStream(url: url)
+            backstream  = InputStream(url: url)
+            total       = Int(DicomFile.fileSize(path: url.path))
+        }
     }
     
     /**
