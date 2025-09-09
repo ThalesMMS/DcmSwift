@@ -898,8 +898,22 @@ public class DicomAssociation: ChannelInboundHandler {
                          "Hex Data:\n\(data.toHex(spacing: 4))\n" +
                          "--- END C-FIND-RQ RAW DATA ---")
         }
+        
+        // Write the main PDU
+        let mainFuture = write(data, promise: promise)
+        
+        // Check if there are additional PDUs to send
+        let additionalPDUs = message.messagesData()
+        if !additionalPDUs.isEmpty {
+            Logger.debug("Sending \(additionalPDUs.count) additional PDU(s) for \(message.messageName())")
+            // Send each additional PDU
+            for additionalData in additionalPDUs {
+                let additionalPromise: EventLoopPromise<Void> = channel!.eventLoop.makePromise()
+                _ = write(additionalData, promise: additionalPromise)
+            }
+        }
                 
-        return write(data, promise: promise)
+        return mainFuture
     }
     
     

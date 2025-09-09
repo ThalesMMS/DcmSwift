@@ -156,39 +156,52 @@ public class CFindRQ: DataTF {
             Logger.debug("C-FIND: Query first bytes: \(preview)")
         }
 
-        // 5. Build P-DATA-TF payload containing command and optional dataset PDVs
-        var pduPayload = Data()
-
-        // Command PDV (command flag set, last fragment)
+        // 5. Build command P-DATA-TF PDU
+        var commandPduPayload = Data()
         let commandHeader: UInt8 = 0x03
-        pduPayload.append(uint32: UInt32(commandData.count + 2), bigEndian: true)
-        pduPayload.append(uint8: pcID, bigEndian: true)
-        pduPayload.append(commandHeader)
-        pduPayload.append(commandData)
-
-        // Dataset PDV (if any) with last fragment flag and command flag cleared
-        if let data = datasetData {
-            let dataHeader: UInt8 = 0x02
-            pduPayload.append(uint32: UInt32(data.count + 2), bigEndian: true)
-            pduPayload.append(uint8: pcID, bigEndian: true)
-            pduPayload.append(dataHeader)
-            pduPayload.append(data)
-        }
+        commandPduPayload.append(uint32: UInt32(commandData.count + 2), bigEndian: true)
+        commandPduPayload.append(uint8: pcID, bigEndian: true)
+        commandPduPayload.append(commandHeader)
+        commandPduPayload.append(commandData)
 
         Logger.info("C-FIND using PCID=\(pcID) AS=\(abstractSyntax) cmdLen=\(commandData.count) dsLen=\(datasetData?.count ?? 0)")
 
-        // 6. Final P-DATA-TF PDU
+        // 6. Build command P-DATA-TF PDU
         var pdu = Data()
         pdu.append(uint8: PDUType.dataTF.rawValue, bigEndian: true)
         pdu.append(byte: 0x00)
-        pdu.append(uint32: UInt32(pduPayload.count), bigEndian: true)
-        pdu.append(pduPayload)
+        pdu.append(uint32: UInt32(commandPduPayload.count), bigEndian: true)
+        pdu.append(commandPduPayload)
+        
+        // Store dataset for separate PDU if present
+        self.separateDatasetPDU = nil
+        if let data = datasetData {
+            var dataPduPayload = Data()
+            let dataHeader: UInt8 = 0x02
+            dataPduPayload.append(uint32: UInt32(data.count + 2), bigEndian: true)
+            dataPduPayload.append(uint8: pcID, bigEndian: true)
+            dataPduPayload.append(dataHeader)
+            dataPduPayload.append(data)
+            
+            var dataPdu = Data()
+            dataPdu.append(uint8: PDUType.dataTF.rawValue, bigEndian: true)
+            dataPdu.append(byte: 0x00)
+            dataPdu.append(uint32: UInt32(dataPduPayload.count), bigEndian: true)
+            dataPdu.append(dataPduPayload)
+            
+            self.separateDatasetPDU = dataPdu
+        }
 
         return pdu
     }
+    
+    private var separateDatasetPDU: Data?
 
     public override func messagesData() -> [Data] {
-        // This is no longer needed as the dataset is sent with the command PDU.
+        // Return the dataset PDU separately if present
+        if let dataPdu = separateDatasetPDU {
+            return [dataPdu]
+        }
         return []
     }
     
