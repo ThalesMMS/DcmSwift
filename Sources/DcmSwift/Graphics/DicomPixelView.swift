@@ -8,6 +8,10 @@ import Metal
 #if canImport(Accelerate)
 import Accelerate
 #endif
+#if canImport(os)
+import os
+import os.signpost
+#endif
 
 /// Lightweight view for displaying DICOM pixel buffers (grayscale).
 /// - Focuses on efficient redraws (post-window/level cache) and CGContext reuse.
@@ -60,6 +64,9 @@ public final class DicomPixelView: UIView {
     // Performance metrics (optional)
     public var enablePerfMetrics: Bool = false
     private var debugLogsEnabled: Bool { UserDefaults.standard.bool(forKey: "settings.debugLogsEnabled") }
+#if canImport(os)
+    private let spLog = OSLog(subsystem: "com.isis.dicomviewer", category: .pointsOfInterest)
+#endif
 
     // MARK: - Public API
 
@@ -246,6 +253,13 @@ public final class DicomPixelView: UIView {
 
     private func recomputeImage() {
         let t0 = enablePerfMetrics ? CFAbsoluteTimeGetCurrent() : 0
+#if canImport(os)
+        if enablePerfMetrics {
+            let spid = OSSignpostID(log: spLog)
+            os_signpost(.begin, log: spLog, name: "DicomPixelView.recomputeImage", signpostID: spid)
+            defer { os_signpost(.end, log: spLog, name: "DicomPixelView.recomputeImage", signpostID: spid) }
+        }
+#endif
         if debugLogsEnabled {
             print("[DicomPixelView] recomputeImage start size=\(imgWidth)x\(imgHeight) spp=\(samplesPerPixel) cacheValid=\(cachedImageDataValid)")
         }
@@ -281,18 +295,35 @@ public final class DicomPixelView: UIView {
             if debugLogsEnabled { print("[DicomPixelView] path=RGBA passthrough") }
         } else if let src8 = pix8 {
             if debugLogsEnabled { print("[DicomPixelView] path=8-bit CPU WL") }
+            let t = enablePerfMetrics ? CFAbsoluteTimeGetCurrent() : 0
             applyWindowTo8(src8, into: &cachedImageData!)
+            if enablePerfMetrics {
+                let dt = (CFAbsoluteTimeGetCurrent() - t) * 1000
+                print("[PERF][DicomPixelView] WL8.ms=\(String(format: "%.3f", dt))")
+            }
         } else if let src16 = pix16 {
             // Adopting the logic from the 'codex' branch for 16-bit processing.
             if let extLUT = lut16 {
                 if debugLogsEnabled { print("[DicomPixelView] path=16-bit external LUT CPU") }
+                let t = enablePerfMetrics ? CFAbsoluteTimeGetCurrent() : 0
                 applyLUTTo16CPU(src16, lut: extLUT, into: &cachedImageData!, components: srcSamplesPerPixel)
+                if enablePerfMetrics {
+                    let dt = (CFAbsoluteTimeGetCurrent() - t) * 1000
+                    print("[PERF][DicomPixelView] LUT16CPU.ms=\(String(format: "%.3f", dt)) comps=\(srcSamplesPerPixel)")
+                }
             } else if applyWindowTo16GPU(src16, srcSamples: srcSamplesPerPixel, into: &cachedImageData!) {
                 if debugLogsEnabled { print("[DicomPixelView] path=16-bit GPU WL") }
             } else {
                 if debugLogsEnabled { print("[DicomPixelView] path=16-bit CPU LUT fallback") }
+                let tL = enablePerfMetrics ? CFAbsoluteTimeGetCurrent() : 0
                 let lut = buildDerivedLUT16(winMin: winMin, winMax: winMax)
+                let tA = enablePerfMetrics ? CFAbsoluteTimeGetCurrent() : 0
                 applyLUTTo16CPU(src16, lut: lut, into: &cachedImageData!, components: srcSamplesPerPixel)
+                if enablePerfMetrics {
+                    let dtL = (CFAbsoluteTimeGetCurrent() - tL) * 1000
+                    let dtA = (CFAbsoluteTimeGetCurrent() - tA) * 1000
+                    print("[PERF][DicomPixelView] LUTgen.ms=\(String(format: "%.3f", dtL)) apply.ms=\(String(format: "%.3f", dtA)) comps=\(srcSamplesPerPixel)")
+                }
             }
         } else {
             // Nothing to do
@@ -303,6 +334,7 @@ public final class DicomPixelView: UIView {
 
         // Build CGImage from the 8-bit buffer.
         guard let cs = colorspace else { return }
+        let tCG = enablePerfMetrics ? CFAbsoluteTimeGetCurrent() : 0
         cachedImageData!.withUnsafeMutableBytes { buffer in
             guard let base = buffer.baseAddress else { return }
             // We don't permanently pin 'data' in the context to avoid retaining unnecessary memory:
@@ -322,6 +354,10 @@ public final class DicomPixelView: UIView {
                 bitmapContext = nil
                 bitmapImage = nil
             }
+        }
+        if enablePerfMetrics {
+            let dtCG = (CFAbsoluteTimeGetCurrent() - tCG) * 1000
+            print("[PERF][DicomPixelView] CGImageBuild.ms=\(String(format: "%.3f", dtCG))")
         }
         if enablePerfMetrics {
             let dt = CFAbsoluteTimeGetCurrent() - t0

@@ -8,6 +8,7 @@
 import Foundation
 #if canImport(os)
 import os
+import os.signpost
 #endif
 
 /// A lightweight, reusable pixel decoding surface for applications.
@@ -59,6 +60,7 @@ public final class PixelService: @unchecked Sendable {
     private init() {}
 #if canImport(os)
     private let oslog = os.Logger(subsystem: "com.isis.dicomviewer", category: "PixelService")
+    private let spLog = OSLog(subsystem: "com.isis.dicomviewer", category: .pointsOfInterest)
 #else
     private struct DummyLogger { func debug(_ msg: String) {} }
     private let oslog = DummyLogger()
@@ -70,6 +72,13 @@ public final class PixelService: @unchecked Sendable {
     public func decodeFirstFrame(from dataset: DataSet) throws -> DecodedFrame {
         let debug = UserDefaults.standard.bool(forKey: "settings.debugLogsEnabled")
         let t0 = CFAbsoluteTimeGetCurrent()
+#if canImport(os)
+        if #available(iOS 14.0, macOS 11.0, *) {
+            let spid = OSSignpostID(log: spLog)
+            os_signpost(.begin, log: spLog, name: "PixelService.decodeFirstFrame", signpostID: spid)
+            defer { os_signpost(.end, log: spLog, name: "PixelService.decodeFirstFrame", signpostID: spid) }
+        }
+#endif
         let rows = Int(dataset.integer16(forTag: "Rows") ?? 0)
         let cols = Int(dataset.integer16(forTag: "Columns") ?? 0)
         guard rows > 0, cols > 0 else { throw PixelServiceError.invalidDimensions }
