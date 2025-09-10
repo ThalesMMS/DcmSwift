@@ -1,3 +1,8 @@
+//  DicomPixelView.swift
+//  DcmSwift
+//
+//  Created by Thales on 2025/09/10.
+
 #if canImport(UIKit)
 import UIKit
 import CoreGraphics

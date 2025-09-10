@@ -1,3 +1,8 @@
+//  Shaders.metal
+//  DcmSwift
+//
+//  Created by Thales on 2025/09/10.
+
 #include <metal_stdlib>
 using namespace metal;
 

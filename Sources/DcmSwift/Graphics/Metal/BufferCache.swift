@@ -1,3 +1,11 @@
+// 
+//   BufferCache.swift
+// 
+//   DcmSwift
+//
+//   Created by Thales on 2025/09/10.
+// 
+
 #if canImport(Metal)
 import Metal
 import Foundation

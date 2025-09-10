@@ -2,6 +2,8 @@
 //  MetalAccelerator.swift
 //  DcmSwift
 //
+//  Created by Thales on 2025/09/10.
+//
 //  Lightweight helper to load the module's Metal shaders via SPM's Bundle.module
 //  and to set up commonly used compute pipelines. Keep behind feature flags and
 //  compile guards; always provide a safe CPU fallback.

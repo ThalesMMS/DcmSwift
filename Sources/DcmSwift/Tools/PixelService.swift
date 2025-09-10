@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import CoreGraphics
 #if canImport(os)
 import os
 import os.signpost
@@ -80,8 +81,8 @@ public final class PixelService: @unchecked Sendable {
             defer { os_signpost(.end, log: spLog, name: "PixelService.decodeFirstFrame", signpostID: spid) }
         }
 #endif
-        let rows = Int(dataset.integer16(forTag: "Rows") ?? 0)
-        let cols = Int(dataset.integer16(forTag: "Columns") ?? 0)
+        var rows = Int(dataset.integer16(forTag: "Rows") ?? 0)
+        var cols = Int(dataset.integer16(forTag: "Columns") ?? 0)
         guard rows > 0, cols > 0 else { throw PixelServiceError.invalidDimensions }
 
         let bitsAllocated = Int(dataset.integer16(forTag: "BitsAllocated") ?? 0)
@@ -89,6 +90,143 @@ public final class PixelService: @unchecked Sendable {
         let intercept = Double(dataset.string(forTag: "RescaleIntercept") ?? "") ?? 0.0
         let pi = dataset.string(forTag: "PhotometricInterpretation")
         let sop = dataset.string(forTag: "SOPInstanceUID")
+
+        // JPEG 2000 Part 1: decode via JP2+ImageIO, preserve 16 bpc for mono when possible
+        if let ts = dataset.transferSyntax, ts.isJPEG2000Part1,
+           let element = dataset.element(forTagName: "PixelData") as? PixelSequence {
+            if debug { print("[PixelService] JPEG2000 detected; decoding via ImageIO") }
+            guard let codestream = try? element.frameCodestream(at: 0) else { throw PixelServiceError.missingPixelData }
+            let j2k = try JPEG2000Decoder.decodeCodestream(codestream)
+
+            // Use decoded dimensions (authoritative from codestream)
+            rows = j2k.height
+            cols = j2k.width
+
+            if j2k.bitsPerComponent > 8 && j2k.components == 1 {
+                guard let px16 = extractGray16Little(j2k.cgImage) else { throw PixelServiceError.missingPixelData }
+                let out = DecodedFrame(id: sop, width: cols, height: rows, bitsAllocated: 16,
+                                       pixels8: nil, pixels16: px16,
+                                       rescaleSlope: slope, rescaleIntercept: intercept,
+                                       photometricInterpretation: pi)
+                if debug {
+                    let dt = (CFAbsoluteTimeGetCurrent() - t0) * 1000
+                    print("[PixelService] j2k mono16 decode dt=\(String(format: "%.1f", dt)) ms size=\(cols)x\(rows)")
+                }
+                return out
+            } else {
+                guard let px8 = extract8(j2k.cgImage) else { throw PixelServiceError.missingPixelData }
+                let out = DecodedFrame(id: sop, width: cols, height: rows, bitsAllocated: 8,
+                                       pixels8: px8, pixels16: nil,
+                                       rescaleSlope: slope, rescaleIntercept: intercept,
+                                       photometricInterpretation: pi)
+                if debug {
+                    let dt = (CFAbsoluteTimeGetCurrent() - t0) * 1000
+                    print("[PixelService] j2k 8-bit decode dt=\(String(format: "%.1f", dt)) ms size=\(cols)x\(rows)")
+                }
+                return out
+            }
+        }
+
+        // JPEG Baseline/Extended (8-bit baseline, 12-bit likely unsupported on iOS)
+        if let ts = dataset.transferSyntax, ts.isJPEGBaselineOrExtended,
+           let element = dataset.element(forTagName: "PixelData") as? PixelSequence {
+            if debug { print("[PixelService] JPEG Baseline/Extended detected; decoding via ImageIO") }
+            guard let jpegs = try? element.frameCodestream(at: 0) else { throw PixelServiceError.missingPixelData }
+            do {
+                let cg = try JPEGBaselineDecoder.decode(jpegs)
+                // Dimensions from decoded image
+                rows = cg.height
+                cols = cg.width
+                if cg.bitsPerComponent > 8 {
+                    // Treat as unsupported for now (12-bit). Let caller surface an error.
+                    if debug { print("[PixelService] JPEG 12-bit unsupported on this platform") }
+                    throw PixelServiceError.missingPixelData
+                }
+                guard let px8 = extract8(cg) else { throw PixelServiceError.missingPixelData }
+                let out = DecodedFrame(id: sop, width: cols, height: rows, bitsAllocated: 8,
+                                       pixels8: px8, pixels16: nil,
+                                       rescaleSlope: slope, rescaleIntercept: intercept,
+                                       photometricInterpretation: pi)
+                if debug {
+                    let dt = (CFAbsoluteTimeGetCurrent() - t0) * 1000
+                    print("[PixelService] jpeg 8-bit decode dt=\(String(format: "%.1f", dt)) ms size=\(cols)x\(rows)")
+                }
+                return out
+            } catch {
+                if debug { print("[PixelService] JPEG decode failed: \(error)") }
+                throw PixelServiceError.missingPixelData
+            }
+        }
+
+        // JPEG-LS (feature-flagged)
+        if let ts = dataset.transferSyntax, ts.isJPEGLS,
+           let element = dataset.element(forTagName: "PixelData") as? PixelSequence {
+            if debug { print("[PixelService] JPEG-LS detected") }
+            guard let jlsData = try? element.frameCodestream(at: 0) else { throw PixelServiceError.missingPixelData }
+            do {
+                let comps = Int(dataset.integer16(forTag: "SamplesPerPixel") ?? 1)
+                let res = try JPEGLSDecoder.decode(jlsData, expectedWidth: cols, expectedHeight: rows, expectedComponents: comps, bitsPerSample: bitsAllocated)
+                if let p16 = res.gray16 {
+                    let out = DecodedFrame(id: sop, width: res.width, height: res.height, bitsAllocated: 16,
+                                           pixels8: nil, pixels16: p16,
+                                           rescaleSlope: slope, rescaleIntercept: intercept,
+                                           photometricInterpretation: pi)
+                    return out
+                } else if let p8 = res.gray8 ?? res.rgb8 {
+                    let out = DecodedFrame(id: sop, width: res.width, height: res.height, bitsAllocated: 8,
+                                           pixels8: p8, pixels16: nil,
+                                           rescaleSlope: slope, rescaleIntercept: intercept,
+                                           photometricInterpretation: pi)
+                    return out
+                } else {
+                    throw PixelServiceError.missingPixelData
+                }
+            } catch JPEGLSError.disabled {
+                if debug { print("[PixelService] JPEG-LS disabled: set DCMSWIFT_ENABLE_JPEGLS=1 to enable experimental decoder") }
+                throw PixelServiceError.missingPixelData
+            } catch JPEGLSError.notImplemented {
+                if debug { print("[PixelService] JPEG-LS not implemented yet (decoder scaffold in place)") }
+                throw PixelServiceError.missingPixelData
+            } catch {
+                if debug { print("[PixelService] JPEG-LS decode failed: \(error)") }
+                throw PixelServiceError.missingPixelData
+            }
+        }
+
+        // RLE Lossless (Annex G): common cases (mono16, mono8, RGB8)
+        if let ts = dataset.transferSyntax, ts.isRLE,
+           let element = dataset.element(forTagName: "PixelData") as? PixelSequence {
+            if debug { print("[PixelService] RLE detected; decoding") }
+            guard let rleData = try? element.frameCodestream(at: 0) else { throw PixelServiceError.missingPixelData }
+            let spp = Int(dataset.integer16(forTag: "SamplesPerPixel") ?? 1)
+            do {
+                let decoded = try RLEDecoder.decode(frameData: rleData, rows: rows, cols: cols, bitsAllocated: bitsAllocated, samplesPerPixel: spp)
+                if let p16 = decoded.pixels16 {
+                    let out = DecodedFrame(id: sop, width: cols, height: rows, bitsAllocated: 16,
+                                           pixels8: nil, pixels16: p16,
+                                           rescaleSlope: slope, rescaleIntercept: intercept,
+                                           photometricInterpretation: pi)
+                    if debug {
+                        let dt = (CFAbsoluteTimeGetCurrent() - t0) * 1000
+                        print("[PixelService] rle mono16 decode dt=\(String(format: "%.1f", dt)) ms size=\(cols)x\(rows)")
+                    }
+                    return out
+                } else if let p8 = decoded.pixels8 {
+                    let out = DecodedFrame(id: sop, width: cols, height: rows, bitsAllocated: 8,
+                                           pixels8: p8, pixels16: nil,
+                                           rescaleSlope: slope, rescaleIntercept: intercept,
+                                           photometricInterpretation: pi)
+                    if debug {
+                        let dt = (CFAbsoluteTimeGetCurrent() - t0) * 1000
+                        print("[PixelService] rle 8-bit decode dt=\(String(format: "%.1f", dt)) ms size=\(cols)x\(rows)")
+                    }
+                    return out
+                }
+            } catch {
+                if debug { print("[PixelService] RLE decode failed: \(error)") }
+                throw PixelServiceError.missingPixelData
+            }
+        }
 
         guard let data = firstFramePixelData(from: dataset) else { throw PixelServiceError.missingPixelData }
 
@@ -129,16 +267,23 @@ public final class PixelService: @unchecked Sendable {
 
     private func firstFramePixelData(from dataset: DataSet) -> Data? {
         guard let element = dataset.element(forTagName: "PixelData") else { return nil }
-        if let seq = element as? DataSequence {
-            for item in seq.items {
-                if item.length > 128, let data = item.data { return data }
+        if let px = element as? PixelSequence {
+            // Encapsulated: use sequence reassembly when possible
+            if let ts = dataset.transferSyntax, ts.isJPEG2000Part1 || ts.isRLE || ts.isJPEGBaselineOrExtended || ts.isJPEGLS || ts.isHTJ2K {
+                // Try robust reassembly for frame 0
+                if let data = try? px.frameCodestream(at: 0) { return data }
             }
+            // Fallback: first non-empty item data
+            for item in px.items { if item.length > 0, let data = item.data, data.count > 0 { return data } }
             return nil
         } else {
-            if let framesString = dataset.string(forTag: "NumberOfFrames"), let frames = Int(framesString), frames > 1 {
+            // Native (uncompressed) data: handle single or multi-frame contiguous buffers
+            if let framesString = dataset.string(forTag: "NumberOfFrames"), let frames = Int(framesString), frames > 1, element.length > 0, frames > 0 {
                 let frameSize = element.length / frames
-                let chunks = element.data.toUnsigned8Array().chunked(into: frameSize)
-                if let first = chunks.first { return Data(first) }
+                let arr = element.data.toUnsigned8Array()
+                if frameSize > 0, arr.count >= frameSize {
+                    return Data(arr[0..<frameSize])
+                }
                 return nil
             } else {
                 return element.data
@@ -154,4 +299,57 @@ public final class PixelService: @unchecked Sendable {
         for i in 0..<result.count { result[i] = UInt16(littleEndian: result[i]) }
         return result
     }
+}
+
+// MARK: - CGImage extraction helpers
+
+@available(iOS 14.0, macOS 11.0, *)
+private func extractGray16Little(_ image: CGImage) -> [UInt16]? {
+    let width = image.width
+    let height = image.height
+    let count = width * height
+    var buffer = [UInt16](repeating: 0, count: count)
+    guard let space = CGColorSpace(name: CGColorSpace.genericGrayGamma2_2) ?? CGColorSpaceCreateDeviceGray() as CGColorSpace? else { return nil }
+    var info = CGBitmapInfo.byteOrder16Little
+    info.insert(CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue))
+    let bytesPerRow = width * MemoryLayout<UInt16>.size
+    let ok = buffer.withUnsafeMutableBytes { raw -> Bool in
+        guard let base = raw.baseAddress else { return false }
+        guard let ctx = CGContext(data: base, width: width, height: height,
+                                  bitsPerComponent: 16, bytesPerRow: bytesPerRow,
+                                  space: space, bitmapInfo: info.rawValue) else { return false }
+        ctx.interpolationQuality = .none
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return true
+    }
+    return ok ? buffer : nil
+}
+
+@available(iOS 14.0, macOS 11.0, *)
+private func extract8(_ image: CGImage) -> [UInt8]? {
+    let width = image.width
+    let height = image.height
+    // Fast path: native 8-bit gray
+    if image.bitsPerComponent == 8, image.bitsPerPixel == 8, (image.colorSpace?.numberOfComponents ?? 1) == 1, image.alphaInfo == .none {
+        if let data = image.dataProvider?.data as Data? {
+            return [UInt8](data)
+        }
+    }
+    // General path: RGBA8888 little-endian
+    let count = width * height * 4
+    var buffer = [UInt8](repeating: 0, count: count)
+    guard let space = CGColorSpaceCreateDeviceRGB() as CGColorSpace? else { return nil }
+    var info = CGBitmapInfo.byteOrder32Little
+    info.insert(CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue))
+    let bytesPerRow = width * 4
+    let ok = buffer.withUnsafeMutableBytes { raw -> Bool in
+        guard let base = raw.baseAddress else { return false }
+        guard let ctx = CGContext(data: base, width: width, height: height,
+                                  bitsPerComponent: 8, bytesPerRow: bytesPerRow,
+                                  space: space, bitmapInfo: info.rawValue) else { return false }
+        ctx.interpolationQuality = .none
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return true
+    }
+    return ok ? buffer : nil
 }

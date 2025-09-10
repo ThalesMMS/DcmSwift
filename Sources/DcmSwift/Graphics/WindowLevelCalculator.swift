@@ -1,3 +1,9 @@
+//  WindowLevelCalculator.swift
+//  DcmSwift
+//
+//  Created by Thales on 2025/09/08.
+//
+
 import Foundation
 
 /// Represents a minimal context for window/level calculations.

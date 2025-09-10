@@ -21,6 +21,53 @@ class PixelSequence: DataSequence {
         case Encapsulated
     }
     
+    /// Returns the raw Basic Offset Table entries as an array of Int (byte offsets), if present.
+    /// Offsets are relative to the first byte of the first pixel fragment (after the BOT item).
+    func basicOffsetTable() -> [Int]? {
+        guard let first = items.first, let data = first.data else { return nil }
+        if data.count == 0 { return [] }
+        // BOT is a sequence of UInt32 little-endian offsets
+        var offsets: [Int] = []
+        let count = data.count / 4
+        offsets.reserveCapacity(count)
+        data.withUnsafeBytes { raw in
+            let ptr = raw.bindMemory(to: UInt32.self)
+            for i in 0..<count { offsets.append(Int(UInt32(littleEndian: ptr[i]))) }
+        }
+        return offsets
+    }
+
+    /// Returns the pixel codestream Data for a given frame index by reassembling fragments.
+    /// Strategy:
+    /// - If Basic Offset Table (BOT) contains offsets: concatenate all fragments and slice by [offset[i] .. offset[i+1]).
+    /// - If BOT empty: assume one fragment per frame (common in practice) and return the fragment at index.
+    /// - If no BOT item exists: treat the first item as fragment 0 (rare) and proceed similarly.
+    func frameCodestream(at index: Int) throws -> Data {
+        enum PXError: Error { case outOfRange, noFragments }
+        guard !items.isEmpty else { throw PXError.noFragments }
+        let fragments = items.dropFirst() // after BOT
+        let bot = basicOffsetTable()
+
+        if let bot = bot, bot.count > 0 {
+            // Build a single contiguous buffer of all fragments
+            var total = Data()
+            total.reserveCapacity(fragments.reduce(0) { $0 + ($1.data?.count ?? 0) })
+            for f in fragments { if let d = f.data { total.append(d) } }
+            guard index < bot.count else { throw PXError.outOfRange }
+            let start = bot[index]
+            let end = (index + 1 < bot.count) ? bot[index + 1] : total.count
+            if start < 0 || end > total.count || start >= end { throw PXError.outOfRange }
+            return total.subdata(in: start..<end)
+        } else {
+            // No BOT or empty BOT: best-effort — one fragment per frame
+            guard index >= 0 && index < fragments.count else { throw PXError.outOfRange }
+            if let d = fragments[fragments.index(fragments.startIndex, offsetBy: index)].data {
+                return d
+            }
+            throw PXError.noFragments
+        }
+    }
+    
     
     public override func toData(vrMethod inVrMethod:VRMethod = .Explicit, byteOrder inByteOrder:ByteOrder = .LittleEndian) -> Data {
         var data = Data()
