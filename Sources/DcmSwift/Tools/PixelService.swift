@@ -73,7 +73,8 @@ public final class PixelService: @unchecked Sendable {
         let debug = UserDefaults.standard.bool(forKey: "settings.debugLogsEnabled")
         let t0 = CFAbsoluteTimeGetCurrent()
 #if canImport(os)
-        if #available(iOS 14.0, macOS 11.0, *) {
+        let perf = UserDefaults.standard.bool(forKey: "settings.perfMetricsEnabled")
+        if perf, #available(iOS 14.0, macOS 11.0, *) {
             let spid = OSSignpostID(log: spLog)
             os_signpost(.begin, log: spLog, name: "PixelService.decodeFirstFrame", signpostID: spid)
             defer { os_signpost(.end, log: spLog, name: "PixelService.decodeFirstFrame", signpostID: spid) }
