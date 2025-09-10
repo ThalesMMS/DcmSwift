@@ -20,6 +20,7 @@ public struct JPEGLSResult {
     public let gray16: [UInt16]?
     public let gray8: [UInt8]?
     public let rgb8: [UInt8]?
+    public let rgb16: [UInt16]?
 }
 
 public enum JPEGLSDecoder {
@@ -42,14 +43,42 @@ public enum JPEGLSDecoder {
         if expectedHeight > 0 && p.height != expectedHeight { /* tolerate */ }
         if expectedComponents > 0 && p.components != expectedComponents { /* tolerate */ }
 
-        // Only NEAR=0 grayscale supported in first cut (scaffold)
-        if p.components == 1 && p.near == 0 {
-            _ = JLSState(bitsPerSample: p.bitsPerSample)
-            // Decode scan (not implemented yet)
-            _ = try? ScanDecoder.decodeGrayscaleNear0(params: p)
-            throw JPEGLSError.notImplemented
-        } else {
-            throw JPEGLSError.notImplemented
+        // Multi-component ILV=none (baseline first)
+        if p.components > 1 {
+            switch p.interleaveMode {
+            case 0: // ILV=none (separate scans)
+                if p.bitsPerSample <= 8 {
+                    if let rgb = try ScanDecoder.decodeMultiComponent(params: p) {
+                        return JPEGLSResult(width: p.width, height: p.height, bitsPerSample: p.bitsPerSample, components: p.components, gray16: nil, gray8: nil, rgb8: rgb, rgb16: nil)
+                    }
+                } else {
+                    if let rgb16 = try ScanDecoder.decodeMultiComponent16(params: p) {
+                        return JPEGLSResult(width: p.width, height: p.height, bitsPerSample: p.bitsPerSample, components: p.components, gray16: nil, gray8: nil, rgb8: nil, rgb16: rgb16)
+                    }
+                }
+                throw JPEGLSError.decodeFailed
+            case 1: // ILV=line
+                let out = try ScanDecoder.decodeInterleavedLine(params: p)
+                return JPEGLSResult(width: p.width, height: p.height, bitsPerSample: p.bitsPerSample, components: p.components, gray16: nil, gray8: out.rgb8, rgb8: out.rgb8, rgb16: out.rgb16)
+            case 2: // ILV=sample
+                throw JPEGLSError.notImplemented
+            default:
+                throw JPEGLSError.notImplemented
+            }
         }
+
+        // Grayscale, NEAR any
+        if p.components == 1 {
+            let dec = try ScanDecoder.decodeGrayscaleNear0(params: p)
+            return JPEGLSResult(width: p.width,
+                                 height: p.height,
+                                 bitsPerSample: p.bitsPerSample,
+                                 components: p.components,
+                                 gray16: dec.gray16,
+                                 gray8: dec.gray8,
+                                 rgb8: nil,
+                                 rgb16: nil)
+        }
+        throw JPEGLSError.notImplemented
     }
 }

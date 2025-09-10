@@ -145,6 +145,27 @@ public class DicomInputStream: OffsetInputStream {
                             vrMethod  = .Explicit
                             byteOrder = .BigEndian
                         }
+                        else if dataset.transferSyntax.isDeflated {
+                            // Switch to inflated stream for the remainder of the dataset
+                            // Consume all remaining bytes (deflated data)
+                            let remaining = self.readableBytes
+                            if remaining > 0, let deflated = self.read(length: remaining) {
+                                if let inflated = try? DeflateCodec.inflateZlib(deflated) {
+                                    // Replace streams with inflated data for further reading
+                                    self.stream?.close(); self.backstream?.close()
+                                    self.stream = InputStream(data: inflated)
+                                    self.backstream = InputStream(data: inflated)
+                                    self.total = inflated.count
+                                    self.offset = 0
+                                    self.stream.open(); self.backstream.open()
+                                    // For deflated TS, dataset part is Explicit VR Little Endian
+                                    vrMethod = .Explicit
+                                    byteOrder = .LittleEndian
+                                    dataset.vrMethod = vrMethod
+                                    dataset.byteOrder = byteOrder
+                                }
+                            }
+                        }
                     }
 
                     // update the dataset properties

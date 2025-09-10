@@ -14,7 +14,8 @@ public enum JP2BuildError: Error { case invalidParams }
 public enum JP2Builder {
     /// Build a simple JP2 file in memory with signature, ftyp, jp2h { ihdr, colr }, and jp2c boxes.
     public static func makeJP2(from codestream: Data, info: J2KCodestreamInfo) throws -> Data {
-        guard info.components == 1 || info.components == 3 else { throw JP2BuildError.invalidParams }
+        // Allow any component count >=1; ImageIO commonly supports 1 and 3, but some codestreams may declare others.
+        // We still build jp2h and let ImageIO decide; map color to Grayscale for 1, otherwise sRGB.
         var out = Data()
 
         func appendBox(_ type: String, payload: Data) {
@@ -27,7 +28,7 @@ public enum JP2Builder {
         }
 
         // Signature box: "jP  \r\n\x87\n"
-        out.append([0x00,0x00,0x00,0x0C, 0x6A,0x50,0x20,0x20, 0x0D,0x0A,0x87,0x0A])
+        out.append(contentsOf: [0x00,0x00,0x00,0x0C, 0x6A,0x50,0x20,0x20, 0x0D,0x0A,0x87,0x0A])
 
         // ftyp ('jp2 ')
         do {
@@ -61,9 +62,9 @@ public enum JP2Builder {
         // colr (Enumerated: 16=sRGB, 17=Grayscale)
         do {
             var colr = Data()
-            colr.append(0x01) // METH=1
-            colr.append(0x00) // PREC=0
-            colr.append(0x00) // APPROX=0
+            colr.append(contentsOf: [0x01]) // METH=1
+            colr.append(contentsOf: [0x00]) // PREC=0
+            colr.append(contentsOf: [0x00]) // APPROX=0
             let enumCS: UInt32 = (info.components == 1) ? 17 : 16
             colr.append(contentsOf: withUnsafeBytes(of: enumCS.bigEndian, Array.init))
             var box = Data()
@@ -96,4 +97,3 @@ public enum JP2Builder {
         return out
     }
 }
-

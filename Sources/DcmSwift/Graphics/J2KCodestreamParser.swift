@@ -44,12 +44,13 @@ public enum J2KCodestreamParser {
                 // Offsets per spec
                 func be16(_ o: Int) -> Int { Int((UInt16(data[o]) << 8) | UInt16(data[o+1])) }
                 func be32(_ o: Int) -> Int { Int((UInt32(data[o]) << 24) | (UInt32(data[o+1]) << 16) | (UInt32(data[o+2]) << 8) | UInt32(data[o+3])) }
-                let Xsiz = be32(start + 4)
-                let Ysiz = be32(start + 8)
-                let XOsiz = be32(start + 12)
-                let YOsiz = be32(start + 16)
-                let Csiz = be16(start + 36)
-                let comp0 = start + 38 // first component parameters (Ssizi, XRsizi, YRsizi)
+                let Xsiz = be32(start + 2)
+                let Ysiz = be32(start + 6)
+                let XOsiz = be32(start + 10)
+                let YOsiz = be32(start + 14)
+                // skip XTsiz(4), YTsiz(4), XTOsiz(4), YTOsiz(4)
+                let Csiz = be16(start + 34)
+                let comp0 = start + 36 // first component parameters (Ssiz, XRsiz, YRsiz)
                 guard comp0 < end else { throw J2KParseError.truncated }
                 let Ssizi = Int(data[comp0])
                 let bits = (Ssizi & 0x7F) + 1
@@ -69,4 +70,3 @@ public enum J2KCodestreamParser {
         throw J2KParseError.sizNotFound
     }
 }
-

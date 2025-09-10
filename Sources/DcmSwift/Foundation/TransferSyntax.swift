@@ -263,4 +263,8 @@ public extension TransferSyntax {
                tsUID == TransferSyntax.JPEGLossy12bit ||
                tsUID == TransferSyntax.JPEGExtended
     }
+
+    var isDeflated: Bool {
+        return tsUID == "1.2.840.10008.1.2.1.99"
+    }
 }

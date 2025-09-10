@@ -16,7 +16,10 @@ struct JPEGLSParams {
     let bitsPerSample: Int
     let near: Int
     let interleaveMode: UInt8 // 0=none,1=line,2=sample
-    let entropyData: Data     // stuffed entropy-coded bytes between SOS and EOI/next marker
+    let entropyData: Data     // stuffed entropy-coded bytes between SOS and EOI/next marker (first scan)
+    let scanEntropies: [Data] // one per SOS when ILV=none
+    let scanComponents: [UInt8] // component selector per scan
+    let scanNEARs: [Int]
 }
 
 enum JPEGLSParseError: Error { case invalid, truncated, unsupported }
@@ -38,6 +41,9 @@ enum JPEGLSParser {
         var ilv: UInt8 = 0
         var entropyStart = 0
         var entropyEnd = 0
+        var scans: [Data] = []
+        var scanCS: [UInt8] = []
+        var scanNEAR: [Int] = []
 
         while i + 1 < data.count {
             if data[i] != 0xFF { i += 1; continue }
@@ -51,10 +57,11 @@ enum JPEGLSParser {
             } else if marker == 0xDA { // SOS (Start of Scan)
                 let Ls = try u16()
                 let Ns = try u8()
-                // Component selectors (Ns bytes)
-                try skip(Int(Ns))
-                near = Int(try u8())
-                ilv = try u8()
+                // Component selectors (Ns bytes); for ILV=none, Ns=1 per scan
+                var cs: [UInt8] = []
+                for _ in 0..<Int(Ns) { cs.append(try u8()) }
+                let thisNear = Int(try u8())
+                let thisIlv = try u8()
                 _ = try u8() // mapping table selector (unused in baseline)
                 // Entropy-coded data begins here until next marker 0xFF D9 or any 0xFF marker
                 entropyStart = i
@@ -70,6 +77,13 @@ enum JPEGLSParser {
                     j += 1
                 }
                 if entropyEnd == 0 { entropyEnd = data.count }
+                // Record this scan
+                let seg = data.subdata(in: entropyStart..<entropyEnd)
+                scans.append(seg)
+                scanCS.append(cs.first ?? 1)
+                scanNEAR.append(thisNear)
+                // Persist main near/ilv from first scan
+                if scans.count == 1 { near = thisNear; ilv = thisIlv }
                 i = entropyEnd
             } else if marker == 0xF7 { // SOF55 (JPEG-LS frame header)
                 let Lf = try u16(); _ = Lf
@@ -93,9 +107,8 @@ enum JPEGLSParser {
             }
         }
 
-        guard width > 0, height > 0, comps > 0, bps > 0, entropyStart > 0 else { throw JPEGLSParseError.invalid }
-        let entropy = data.subdata(in: entropyStart..<entropyEnd)
-        return JPEGLSParams(width: width, height: height, components: comps, bitsPerSample: bps, near: near, interleaveMode: ilv, entropyData: entropy)
+        guard width > 0, height > 0, comps > 0, bps > 0, !scans.isEmpty else { throw JPEGLSParseError.invalid }
+        let entropy = scans.first ?? Data()
+        return JPEGLSParams(width: width, height: height, components: comps, bitsPerSample: bps, near: near, interleaveMode: ilv, entropyData: entropy, scanEntropies: scans, scanComponents: scanCS, scanNEARs: scanNEAR)
     }
 }
-

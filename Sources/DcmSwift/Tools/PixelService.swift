@@ -91,10 +91,10 @@ public final class PixelService: @unchecked Sendable {
         let pi = dataset.string(forTag: "PhotometricInterpretation")
         let sop = dataset.string(forTag: "SOPInstanceUID")
 
-        // JPEG 2000 Part 1: decode via JP2+ImageIO, preserve 16 bpc for mono when possible
-        if let ts = dataset.transferSyntax, ts.isJPEG2000Part1,
+        // JPEG 2000 Part 1 and HTJ2K: decode via JP2+ImageIO, preserve 16 bpc for mono when possible
+        if let ts = dataset.transferSyntax, (ts.isJPEG2000Part1 || ts.isHTJ2K),
            let element = dataset.element(forTagName: "PixelData") as? PixelSequence {
-            if debug { print("[PixelService] JPEG2000 detected; decoding via ImageIO") }
+            if debug { print("[PixelService] JPEG2000/HTJ2K detected; decoding via ImageIO") }
             guard let codestream = try? element.frameCodestream(at: 0) else { throw PixelServiceError.missingPixelData }
             let j2k = try JPEG2000Decoder.decodeCodestream(codestream)
 
@@ -103,26 +103,47 @@ public final class PixelService: @unchecked Sendable {
             cols = j2k.width
 
             if j2k.bitsPerComponent > 8 && j2k.components == 1 {
-                guard let px16 = extractGray16Little(j2k.cgImage) else { throw PixelServiceError.missingPixelData }
+                // Prefer raw provider bytes to avoid color management/gamma transforms.
+                let px16 = extractGray16Raw(j2k.cgImage) ?? extractGray16Little(j2k.cgImage)
+                guard let px16 else { throw PixelServiceError.missingPixelData }
+                let mono1 = (pi?.trimmingCharacters(in: .whitespaces).uppercased() == "MONOCHROME1")
+                let p16Out: [UInt16]
+                if mono1 {
+                    p16Out = px16.map { 0xFFFF &- $0 }
+                } else {
+                    p16Out = px16
+                }
                 let out = DecodedFrame(id: sop, width: cols, height: rows, bitsAllocated: 16,
-                                       pixels8: nil, pixels16: px16,
+                                       pixels8: nil, pixels16: p16Out,
                                        rescaleSlope: slope, rescaleIntercept: intercept,
-                                       photometricInterpretation: pi)
+                                       photometricInterpretation: mono1 ? "MONOCHROME2" : pi)
                 if debug {
                     let dt = (CFAbsoluteTimeGetCurrent() - t0) * 1000
-                    print("[PixelService] j2k mono16 decode dt=\(String(format: "%.1f", dt)) ms size=\(cols)x\(rows)")
+                    print("[PixelService] j2k/htj2k mono16 decode dt=\(String(format: "%.1f", dt)) ms size=\(cols)x\(rows)")
+                }
+                return out
+            } else if j2k.components == 1 {
+                // 8-bit grayscale
+                guard let px8raw = extract8(j2k.cgImage) else { throw PixelServiceError.missingPixelData }
+                let mono1 = (pi?.trimmingCharacters(in: .whitespaces).uppercased() == "MONOCHROME1")
+                let p8Out: [UInt8] = mono1 ? px8raw.map { 255 &- $0 } : px8raw
+                // Already in display domain; avoid modality LUT here.
+                let out = DecodedFrame(id: sop, width: cols, height: rows, bitsAllocated: 8,
+                                       pixels8: p8Out, pixels16: nil,
+                                       rescaleSlope: 1.0, rescaleIntercept: 0.0,
+                                       photometricInterpretation: mono1 ? "MONOCHROME2" : pi)
+                if debug {
+                    let dt = (CFAbsoluteTimeGetCurrent() - t0) * 1000
+                    print("[PixelService] j2k/htj2k 8-bit decode dt=\(String(format: "%.1f", dt)) ms size=\(cols)x\(rows)")
                 }
                 return out
             } else {
-                guard let px8 = extract8(j2k.cgImage) else { throw PixelServiceError.missingPixelData }
+                // Color: return interleaved RGB8
+                guard let rgb = extractRGB8(j2k.cgImage) else { throw PixelServiceError.missingPixelData }
                 let out = DecodedFrame(id: sop, width: cols, height: rows, bitsAllocated: 8,
-                                       pixels8: px8, pixels16: nil,
-                                       rescaleSlope: slope, rescaleIntercept: intercept,
-                                       photometricInterpretation: pi)
-                if debug {
-                    let dt = (CFAbsoluteTimeGetCurrent() - t0) * 1000
-                    print("[PixelService] j2k 8-bit decode dt=\(String(format: "%.1f", dt)) ms size=\(cols)x\(rows)")
-                }
+                                       pixels8: rgb, pixels16: nil,
+                                       rescaleSlope: 1.0, rescaleIntercept: 0.0,
+                                       photometricInterpretation: "RGB")
                 return out
             }
         }
@@ -309,7 +330,8 @@ private func extractGray16Little(_ image: CGImage) -> [UInt16]? {
     let height = image.height
     let count = width * height
     var buffer = [UInt16](repeating: 0, count: count)
-    guard let space = CGColorSpace(name: CGColorSpace.genericGrayGamma2_2) ?? CGColorSpaceCreateDeviceGray() as CGColorSpace? else { return nil }
+    // Use linear grayscale to avoid gamma changes.
+    guard let space = CGColorSpace(name: CGColorSpace.linearGray) ?? CGColorSpaceCreateDeviceGray() as CGColorSpace? else { return nil }
     var info = CGBitmapInfo.byteOrder16Little
     info.insert(CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue))
     let bytesPerRow = width * MemoryLayout<UInt16>.size
@@ -352,4 +374,84 @@ private func extract8(_ image: CGImage) -> [UInt8]? {
         return true
     }
     return ok ? buffer : nil
+}
+
+@available(iOS 14.0, macOS 11.0, *)
+private func extractRGB8(_ image: CGImage) -> [UInt8]? {
+    let width = image.width
+    let height = image.height
+    let count = width * height * 3
+    var buffer = [UInt8](repeating: 0, count: count)
+    guard let space = CGColorSpaceCreateDeviceRGB() as CGColorSpace? else { return nil }
+    // Try 24 bpp RGB (no alpha)
+    var info = CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue)
+    let bytesPerRow = width * 3
+    let ok = buffer.withUnsafeMutableBytes { raw -> Bool in
+        guard let base = raw.baseAddress else { return false }
+        guard let ctx = CGContext(data: base, width: width, height: height,
+                                  bitsPerComponent: 8, bytesPerRow: bytesPerRow,
+                                  space: space, bitmapInfo: info.rawValue) else { return false }
+        ctx.interpolationQuality = .none
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return true
+    }
+    if ok { return buffer }
+    // Fallback: draw as RGBA8888 and strip alpha
+    var rgba = [UInt8](repeating: 0, count: width * height * 4)
+    var info2 = CGBitmapInfo.byteOrder32Little
+    info2.insert(CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue))
+    let ok2 = rgba.withUnsafeMutableBytes { raw -> Bool in
+        guard let base = raw.baseAddress else { return false }
+        guard let ctx = CGContext(data: base, width: width, height: height,
+                                  bitsPerComponent: 8, bytesPerRow: width * 4,
+                                  space: space, bitmapInfo: info2.rawValue) else { return false }
+        ctx.interpolationQuality = .none
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return true
+    }
+    if !ok2 { return nil }
+    var out = [UInt8](repeating: 0, count: count)
+    var j = 0
+    var i = 0
+    while i < rgba.count {
+        // RGBA little-endian: BGRA in memory; convert to RGB
+        let b = rgba[i+0]
+        let g = rgba[i+1]
+        let r = rgba[i+2]
+        out[j] = r; out[j+1] = g; out[j+2] = b
+        j += 3; i += 4
+    }
+    return out
+}
+
+@available(iOS 14.0, macOS 11.0, *)
+private func extractGray16Raw(_ image: CGImage) -> [UInt16]? {
+    guard image.bitsPerComponent == 16,
+          image.bitsPerPixel == 16,
+          (image.colorSpace?.numberOfComponents ?? 1) == 1,
+          image.alphaInfo == .none else { return nil }
+    guard let data = image.dataProvider?.data as Data? else { return nil }
+    let width = image.width
+    let height = image.height
+    let rowBytes = image.bytesPerRow
+    if rowBytes < width * 2 { return nil }
+    var out = [UInt16](repeating: 0, count: width * height)
+    data.withUnsafeBytes { raw in
+        guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return }
+        var dstIndex = 0
+        for y in 0..<height {
+            let row = base.advanced(by: y * rowBytes)
+            var x = 0
+            while x < width {
+                // Assume big-endian in provider; convert to host little-endian
+                let msb = UInt16(row[x*2])
+                let lsb = UInt16(row[x*2 + 1])
+                let be = (msb << 8) | lsb
+                out[dstIndex] = UInt16(bigEndian: be)
+                dstIndex += 1
+                x += 1
+            }
+        }
+    }
+    return out
 }
