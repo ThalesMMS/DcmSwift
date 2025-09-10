@@ -7,3 +7,6 @@ docs/
 Tests/DcmSwiftTests/Resources/
 __MACOSX/
 /build
+CLAUDE.md
+AGENTS.md
+GEMINI.md
