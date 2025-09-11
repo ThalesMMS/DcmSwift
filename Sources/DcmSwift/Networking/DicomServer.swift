@@ -8,6 +8,7 @@
 
 import Foundation
 import NIO
+import NIOSSL
 import Dispatch
 
 
@@ -23,6 +24,21 @@ public struct ServerConfig {
     }
 }
 
+/// TLS server options for DICOM listener
+public struct TLSServerOptions {
+    public var enabled: Bool
+    public var certificatePath: String?
+    public var privateKeyPath: String?
+    public var passphrase: String?
+
+    public init(enabled: Bool = false, certificatePath: String? = nil, privateKeyPath: String? = nil, passphrase: String? = nil) {
+        self.enabled = enabled
+        self.certificatePath = certificatePath
+        self.privateKeyPath = privateKeyPath
+        self.passphrase = passphrase
+    }
+}
+
 public class DicomServer: CEchoSCPDelegate, CFindSCPDelegate, CStoreSCPDelegate {
     var calledAE:DicomEntity!
     var port: Int = 4096
@@ -32,6 +48,8 @@ public class DicomServer: CEchoSCPDelegate, CFindSCPDelegate, CStoreSCPDelegate 
     var channel: Channel!
     var group:MultiThreadedEventLoopGroup!
     var bootstrap:ServerBootstrap!
+    var tlsOptions: TLSServerOptions? = nil
+    var tlsContext: NIOSSLContext? = nil
     
     /// Optional custom delegate for C-STORE operations
     public var storeSCPDelegate: ((DataSet) -> DIMSEStatus.Status)?
@@ -43,16 +61,25 @@ public class DicomServer: CEchoSCPDelegate, CFindSCPDelegate, CStoreSCPDelegate 
         self.init(port: port, localAET: localAET, config: defaultConfig)
     }
     
-    public init(port: Int, localAET:String, config:ServerConfig) {
+    public init(port: Int, localAET:String, config:ServerConfig, tls: TLSServerOptions? = nil) {
         self.calledAE   = DicomEntity(title: localAET, hostname: DicomEntity.getLocalIPAddress(), port: port)
         self.port       = port
         self.config     = config
+        self.tlsOptions = tls
         
         self.group = MultiThreadedEventLoopGroup(numberOfThreads: System.coreCount)
         self.bootstrap = ServerBootstrap(group: group)
             .serverChannelOption(ChannelOptions.backlog, value: 256)
             .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
             .childChannelInitializer { channel in
+                // Optionally add TLS handler first in the pipeline
+                if let tlsCtx = self.tlsContext {
+                    do {
+                        try channel.pipeline.syncOperations.addHandler(NIOSSLServerHandler(context: tlsCtx))
+                    } catch {
+                        Logger.error("Failed to add TLS handler: \(error)")
+                    }
+                }
                 // we create a new DicomAssociation for each new activating channel
                 let assoc = DicomAssociation(group: self.group, calledAE: self.calledAE)
                 
@@ -75,6 +102,29 @@ public class DicomServer: CEchoSCPDelegate, CFindSCPDelegate, CStoreSCPDelegate 
             .childChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
             .childChannelOption(ChannelOptions.maxMessagesPerRead, value: 16)
             .childChannelOption(ChannelOptions.recvAllocator, value: AdaptiveRecvByteBufferAllocator())
+
+        // Prepare TLS context if requested and configured
+        if let tls = tls, tls.enabled {
+            if let certPath = tls.certificatePath, let keyPath = tls.privateKeyPath {
+                do {
+                    let certs = try NIOSSLCertificate.fromPEMFile(certPath)
+                    let key = try NIOSSLPrivateKey(file: keyPath, format: .pem)
+                    var tcfg = TLSConfiguration.makeServerConfiguration(
+                        certificateChain: certs.map { .certificate($0) },
+                        privateKey: .privateKey(key)
+                    )
+                    // Reasonable defaults per BCP 195 (NIO defaults are fine for now)
+                    tcfg.minimumTLSVersion = .tlsv12
+                    self.tlsContext = try NIOSSLContext(configuration: tcfg)
+                    Logger.info("TLS context initialized for DICOM Server")
+                } catch {
+                    Logger.error("Failed to initialize TLS: \(error). Server will run without TLS.")
+                    self.tlsContext = nil
+                }
+            } else {
+                Logger.warning("TLS enabled but certificate or key path not provided. Server will run without TLS.")
+            }
+        }
     }
     
     
