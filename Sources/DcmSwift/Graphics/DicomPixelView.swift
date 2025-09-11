@@ -323,12 +323,17 @@ public final class DicomPixelView: UIView {
         } else if let src16 = pix16 {
             // Adopting the logic from the 'codex' branch for 16-bit processing.
             if let extLUT = lut16 {
-                if debugLogsEnabled { print("[DicomPixelView] path=16-bit external LUT CPU") }
-                let t = enablePerfMetrics ? CFAbsoluteTimeGetCurrent() : 0
-                applyLUTTo16CPU(src16, lut: extLUT, into: &cachedImageData!, components: srcSamplesPerPixel)
-                if enablePerfMetrics {
-                    let dt = (CFAbsoluteTimeGetCurrent() - t) * 1000
-                    print("[PERF][DicomPixelView] LUT16CPU.ms=\(String(format: "%.3f", dt)) comps=\(srcSamplesPerPixel)")
+                // Try GPU first
+                if applyLUTTo16GPU(src16, lut: extLUT, into: &cachedImageData!, components: srcSamplesPerPixel) {
+                    if debugLogsEnabled { print("[DicomPixelView] path=16-bit external LUT GPU") }
+                } else {
+                    if debugLogsEnabled { print("[DicomPixelView] path=16-bit external LUT CPU") }
+                    let t = enablePerfMetrics ? CFAbsoluteTimeGetCurrent() : 0
+                    applyLUTTo16CPU(src16, lut: extLUT, into: &cachedImageData!, components: srcSamplesPerPixel)
+                    if enablePerfMetrics {
+                        let dt = (CFAbsoluteTimeGetCurrent() - t) * 1000
+                        print("[PERF][DicomPixelView] LUT16CPU.ms=\(String(format: "%.3f", dt)) comps=\(srcSamplesPerPixel)")
+                    }
                 }
             } else if applyWindowTo16GPU(src16, srcSamples: srcSamplesPerPixel, into: &cachedImageData!) {
                 if debugLogsEnabled { print("[DicomPixelView] path=16-bit GPU WL") }
@@ -604,6 +609,51 @@ public final class DicomPixelView: UIView {
                                  inComponents: srcSamples)
             }
         }
+    }
+    
+    private func applyLUTTo16GPU(_ src: [UInt16], lut: [UInt8], into dst: inout [UInt8], components: Int = 1) -> Bool {
+#if canImport(Metal)
+        let accel = MetalAccelerator.shared
+        guard let pso = accel.voiLUTPipelineState, let queue = accel.commandQueue else { return false }
+        let numPixels = imgWidth * imgHeight
+        let inLen = numPixels * components * MemoryLayout<UInt16>.stride
+        let outLen = numPixels * samplesPerPixel * MemoryLayout<UInt8>.stride
+        // Expect a 65536-entry 8-bit LUT
+        guard lut.count >= 65536 else { return false }
+        let cache = MetalBufferCache.shared
+        guard let inBuf = cache.buffer(length: inLen),
+              let outBuf = cache.buffer(length: outLen),
+              let lutBuf = cache.buffer(length: 65536) else { return false }
+        src.withUnsafeBytes { memcpy(inBuf.contents(), $0.baseAddress!, inLen) }
+        lut.withUnsafeBytes { memcpy(lutBuf.contents(), $0.baseAddress!, 65536) }
+        var uCount = UInt32(numPixels)
+        var invert: Bool = self.inverted
+        var uComp = UInt32(components)
+        var uOutComp = UInt32(samplesPerPixel)
+        guard let cmd = queue.makeCommandBuffer(), let enc = cmd.makeComputeCommandEncoder() else { return false }
+        enc.setComputePipelineState(pso)
+        enc.setBuffer(inBuf, offset: 0, index: 0)
+        enc.setBuffer(lutBuf, offset: 0, index: 1)
+        enc.setBuffer(outBuf, offset: 0, index: 2)
+        enc.setBytes(&uCount, length: MemoryLayout<UInt32>.stride, index: 3)
+        enc.setBytes(&invert, length: MemoryLayout<Bool>.stride, index: 4)
+        enc.setBytes(&uComp, length: MemoryLayout<UInt32>.stride, index: 5)
+        enc.setBytes(&uOutComp, length: MemoryLayout<UInt32>.stride, index: 6)
+        let w = min(pso.threadExecutionWidth, pso.maxTotalThreadsPerThreadgroup)
+        let threadsPerThreadgroup = MTLSize(width: w, height: 1, depth: 1)
+        let groups = MTLSize(width: (numPixels + w - 1) / w, height: 1, depth: 1)
+        enc.dispatchThreadgroups(groups, threadsPerThreadgroup: threadsPerThreadgroup)
+        enc.endEncoding()
+        cmd.commit()
+        cmd.waitUntilCompleted()
+        dst.withUnsafeMutableBytes { memcpy($0.baseAddress!, outBuf.contents(), outLen) }
+        cache.recycle(inBuf)
+        cache.recycle(outBuf)
+        cache.recycle(lutBuf)
+        return true
+#else
+        return false
+#endif
     }
     // --- END CONFLICT RESOLUTION ---
 

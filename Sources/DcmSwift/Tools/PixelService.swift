@@ -96,6 +96,26 @@ public final class PixelService: @unchecked Sendable {
            let element = dataset.element(forTagName: "PixelData") as? PixelSequence {
             if debug { print("[PixelService] JPEG2000/HTJ2K detected; decoding via ImageIO") }
             guard let codestream = try? element.frameCodestream(at: 0) else { throw PixelServiceError.missingPixelData }
+            // Prefer native 16-bit decoder when requested (guarded by compile flag)
+            #if DCMSWIFT_ENABLE_NATIVE_J2K
+            if UserDefaults.standard.bool(forKey: "settings.decoderPrefer16Bit"),
+               let native = J2KNativeDecoder.decodeU16(codestream) {
+                rows = native.height
+                cols = native.width
+                let mono1 = (pi?.trimmingCharacters(in: .whitespaces).uppercased() == "MONOCHROME1")
+                let p16Out: [UInt16] = mono1 ? native.pixels.map { 0xFFFF &- $0 } : native.pixels
+                let out = DecodedFrame(id: sop, width: cols, height: rows, bitsAllocated: 16,
+                                       pixels8: nil, pixels16: p16Out,
+                                       rescaleSlope: slope, rescaleIntercept: intercept,
+                                       photometricInterpretation: mono1 ? "MONOCHROME2" : pi)
+                if debug {
+                    let dt = (CFAbsoluteTimeGetCurrent() - t0) * 1000
+                    print("[PixelService] j2k native 16-bit decode dt=\(String(format: "%.1f", dt)) ms size=\(cols)x\(rows)")
+                }
+                return out
+            }
+            #endif
+
             let j2k = try JPEG2000Decoder.decodeCodestream(codestream)
 
             // Use decoded dimensions (authoritative from codestream)

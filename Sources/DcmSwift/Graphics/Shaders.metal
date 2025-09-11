@@ -41,3 +41,29 @@ kernel void windowLevelKernel(
         outPixels[outBase + 3] = 255; // opaque alpha when writing RGBA
     }
 }
+
+// VOI LUT mapping: 16-bit input -> 8-bit output via LUT (8-bit entries)
+kernel void voiLUTKernel(
+    device const ushort*   inPixels       [[ buffer(0) ]],
+    device const uchar*    lut8           [[ buffer(1) ]],
+    device uchar*          outPixels      [[ buffer(2) ]],
+    constant uint&         count          [[ buffer(3) ]],
+    constant bool&         invert         [[ buffer(4) ]],
+    constant uint&         inComponents   [[ buffer(5) ]],
+    constant uint&         outComponents  [[ buffer(6) ]],
+    uint                   gid            [[ thread_position_in_grid ]]
+) {
+    if (gid >= count) return;
+    uint inBase = gid * inComponents;
+    uint outBase = gid * outComponents;
+    uint comp = min(inComponents, outComponents);
+    for (uint c = 0; c < comp; ++c) {
+        ushort key = inPixels[inBase + c];
+        uchar v = lut8[key];
+        if (invert) v = (uchar)(255 - v);
+        outPixels[outBase + c] = v;
+    }
+    if (outComponents > 3 && comp < outComponents) {
+        outPixels[outBase + 3] = 255;
+    }
+}

@@ -20,6 +20,7 @@ public final class MetalAccelerator {
     public let device: MTLDevice?
     public let library: MTLLibrary?
     public let windowLevelPipelineState: MTLComputePipelineState?
+    public let voiLUTPipelineState: MTLComputePipelineState?
     public let commandQueue: MTLCommandQueue?
 
     public var isAvailable: Bool { windowLevelPipelineState != nil }
@@ -28,14 +29,14 @@ public final class MetalAccelerator {
         let debug = UserDefaults.standard.bool(forKey: "settings.debugLogsEnabled")
         // Allow opt-out via env/UD flag
         if ProcessInfo.processInfo.environment["DCMSWIFT_DISABLE_METAL"] == "1" {
-            device = nil; library = nil; windowLevelPipelineState = nil; commandQueue = nil
+            device = nil; library = nil; windowLevelPipelineState = nil; voiLUTPipelineState = nil; commandQueue = nil
             // Loud, unconditional log to make it obvious Metal path is off
             print("⚠️ [DcmSwift][Metal] Metal desativado por DCMSWIFT_DISABLE_METAL=1. Usando fallback de CPU.")
             return
         }
 
         guard let dev = MTLCreateSystemDefaultDevice() else {
-            device = nil; library = nil; windowLevelPipelineState = nil; commandQueue = nil
+            device = nil; library = nil; windowLevelPipelineState = nil; voiLUTPipelineState = nil; commandQueue = nil
             if debug { print("[MetalAccelerator] No Metal device available") }
             return
         }
@@ -66,6 +67,13 @@ public final class MetalAccelerator {
         } else {
             windowLevelPipelineState = nil
             if debug { print("[MetalAccelerator] windowLevelKernel function not found in library") }
+        }
+        if let f2 = library?.makeFunction(name: "voiLUTKernel"), let d2 = device {
+            voiLUTPipelineState = try? d2.makeComputePipelineState(function: f2)
+            if debug { print("[MetalAccelerator] Pipeline voiLUTKernel -> \(voiLUTPipelineState != nil)") }
+        } else {
+            voiLUTPipelineState = nil
+            if debug { print("[MetalAccelerator] voiLUTKernel function not found in library") }
         }
     }
 }
