@@ -127,11 +127,12 @@ public final class PixelService: @unchecked Sendable {
                 guard let px8raw = extract8(j2k.cgImage) else { throw PixelServiceError.missingPixelData }
                 let mono1 = (pi?.trimmingCharacters(in: .whitespaces).uppercased() == "MONOCHROME1")
                 let p8Out: [UInt8] = mono1 ? px8raw.map { 255 &- $0 } : px8raw
-                // Already in display domain; avoid modality LUT here.
+
                 let out = DecodedFrame(id: sop, width: cols, height: rows, bitsAllocated: 8,
-                                       pixels8: p8Out, pixels16: nil,
-                                       rescaleSlope: 1.0, rescaleIntercept: 0.0,
-                                       photometricInterpretation: mono1 ? "MONOCHROME2" : pi)
+                                    pixels8: p8Out, pixels16: nil,
+                                    // >>> preserve slope/intercept aqui <<<
+                                    rescaleSlope: slope, rescaleIntercept: intercept,
+                                    photometricInterpretation: mono1 ? "MONOCHROME2" : pi)
                 if debug {
                     let dt = (CFAbsoluteTimeGetCurrent() - t0) * 1000
                     print("[PixelService] j2k/htj2k 8-bit decode dt=\(String(format: "%.1f", dt)) ms size=\(cols)x\(rows)")

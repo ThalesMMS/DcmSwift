@@ -42,6 +42,7 @@ public final class DicomPixelView: UIView {
     private var winMax: Int = 0
     private var lastWinMin: Int = Int.min
     private var lastWinMax: Int = Int.min
+    private var inverted: Bool = false
 
     // MARK: - LUT for 16-bit→8-bit
     /// Optional external LUT. If present, it's used instead of deriving from the window.
@@ -105,6 +106,14 @@ public final class DicomPixelView: UIView {
         setWindow(center: windowCenter, width: windowWidth)
         // --- CONFLICT RESOLVED ---
         // Adopting the immediate recompute call from the 'codex' branch.
+        cachedImageDataValid = false
+        recomputeImmediately()
+    }
+
+    /// Set inversion for window/level mapping.
+    public func setInvert(_ inv: Bool) {
+        if inv == inverted { return }
+        inverted = inv
         cachedImageDataValid = false
         recomputeImmediately()
     }
@@ -299,12 +308,17 @@ public final class DicomPixelView: UIView {
             cachedImageData = rgba
             if debugLogsEnabled { print("[DicomPixelView] path=RGBA passthrough") }
         } else if let src8 = pix8 {
-            if debugLogsEnabled { print("[DicomPixelView] path=8-bit CPU WL") }
-            let t = enablePerfMetrics ? CFAbsoluteTimeGetCurrent() : 0
-            applyWindowTo8(src8, into: &cachedImageData!)
-            if enablePerfMetrics {
-                let dt = (CFAbsoluteTimeGetCurrent() - t) * 1000
-                print("[PERF][DicomPixelView] WL8.ms=\(String(format: "%.3f", dt))")
+            // Prefer GPU WL even for 8-bit to avoid CPU cost; fallback to CPU if unavailable.
+            if applyWindowTo8GPU(src8, into: &cachedImageData!) {
+                if debugLogsEnabled { print("[DicomPixelView] path=8-bit GPU WL") }
+            } else {
+                if debugLogsEnabled { print("[DicomPixelView] path=8-bit CPU WL") }
+                let t = enablePerfMetrics ? CFAbsoluteTimeGetCurrent() : 0
+                applyWindowTo8(src8, into: &cachedImageData!)
+                if enablePerfMetrics {
+                    let dt = (CFAbsoluteTimeGetCurrent() - t) * 1000
+                    print("[PERF][DicomPixelView] WL8.ms=\(String(format: "%.3f", dt))")
+                }
             }
         } else if let src16 = pix16 {
             // Adopting the logic from the 'codex' branch for 16-bit processing.
@@ -398,16 +412,25 @@ public final class DicomPixelView: UIView {
                             let v1 = Int(inBase[i+1]);  let c1 = min(max(v1 - winMin, 0), denom)
                             let v2 = Int(inBase[i+2]);  let c2 = min(max(v2 - winMin, 0), denom)
                             let v3 = Int(inBase[i+3]);  let c3 = min(max(v3 - winMin, 0), denom)
-                            outBase[i]   = UInt8(c0 * 255 / denom)
-                            outBase[i+1] = UInt8(c1 * 255 / denom)
-                            outBase[i+2] = UInt8(c2 * 255 / denom)
-                            outBase[i+3] = UInt8(c3 * 255 / denom)
+                            var o0 = UInt8(c0 * 255 / denom)
+                            var o1 = UInt8(c1 * 255 / denom)
+                            var o2 = UInt8(c2 * 255 / denom)
+                            var o3 = UInt8(c3 * 255 / denom)
+                            if inverted {
+                                o0 = 255 &- o0; o1 = 255 &- o1; o2 = 255 &- o2; o3 = 255 &- o3
+                            }
+                            outBase[i]   = o0
+                            outBase[i+1] = o1
+                            outBase[i+2] = o2
+                            outBase[i+3] = o3
                             i += 4
                         }
                         while i < end {
                             let v = Int(inBase[i])
                             let clamped = min(max(v - winMin, 0), denom)
-                            outBase[i] = UInt8(clamped * 255 / denom)
+                            var o = UInt8(clamped * 255 / denom)
+                            if inverted { o = 255 &- o }
+                            outBase[i] = o
                             i += 1
                         }
                     }
@@ -424,16 +447,25 @@ public final class DicomPixelView: UIView {
                         let v1 = Int(inBuf[i+1]);  let c1 = min(max(v1 - winMin, 0), denom)
                         let v2 = Int(inBuf[i+2]);  let c2 = min(max(v2 - winMin, 0), denom)
                         let v3 = Int(inBuf[i+3]);  let c3 = min(max(v3 - winMin, 0), denom)
-                        outBuf[i]   = UInt8(c0 * 255 / denom)
-                        outBuf[i+1] = UInt8(c1 * 255 / denom)
-                        outBuf[i+2] = UInt8(c2 * 255 / denom)
-                        outBuf[i+3] = UInt8(c3 * 255 / denom)
+                        var o0 = UInt8(c0 * 255 / denom)
+                        var o1 = UInt8(c1 * 255 / denom)
+                        var o2 = UInt8(c2 * 255 / denom)
+                        var o3 = UInt8(c3 * 255 / denom)
+                        if inverted {
+                            o0 = 255 &- o0; o1 = 255 &- o1; o2 = 255 &- o2; o3 = 255 &- o3
+                        }
+                        outBuf[i]   = o0
+                        outBuf[i+1] = o1
+                        outBuf[i+2] = o2
+                        outBuf[i+3] = o3
                         i += 4
                     }
                     while i < numPixels {
                         let v = Int(inBuf[i])
                         let clamped = min(max(v - winMin, 0), denom)
-                        outBuf[i] = UInt8(clamped * 255 / denom)
+                        var o = UInt8(clamped * 255 / denom)
+                        if inverted { o = 255 &- o }
+                        outBuf[i] = o
                         i += 1
                     }
                 }
@@ -505,6 +537,10 @@ public final class DicomPixelView: UIView {
             vDSP_vindex(lutF, indices, 1, &resultF, 1, vDSP_Length(numPixels))
             dst.withUnsafeMutableBufferPointer { out in
                 vDSP_vfixu8(resultF, 1, out.baseAddress!, 1, vDSP_Length(numPixels))
+                if inverted {
+                    var i = 0
+                    while i < numPixels { out[i] = 255 &- out[i]; i += 1 }
+                }
             }
             return
         }
@@ -518,7 +554,8 @@ public final class DicomPixelView: UIView {
                         let inBase = i * components
                         let outBase = i * samplesPerPixel
                         for c in 0..<components {
-                            outBuf[outBase + c] = lutBuf[Int(inBuf[inBase + c])]
+                            let v = lutBuf[Int(inBuf[inBase + c])]
+                            outBuf[outBase + c] = inverted ? (255 &- v) : v
                         }
                         if components < samplesPerPixel {
                             outBuf[outBase + 3] = 255
@@ -527,6 +564,31 @@ public final class DicomPixelView: UIView {
                 }
             }
         }
+    }
+
+    private func applyWindowTo8GPU(_ src: [UInt8], into dst: inout [UInt8]) -> Bool {
+#if canImport(Metal)
+        let accel = MetalAccelerator.shared
+        guard accel.isAvailable else { return false }
+        let numPixels = imgWidth * imgHeight
+        // Widen 8-bit input to 16-bit temporary buffer to reuse the same shader
+        var temp16 = [UInt16](repeating: 0, count: numPixels)
+        let limit = min(src.count, numPixels)
+        var i = 0
+        while i < limit { temp16[i] = UInt16(src[i]); i += 1 }
+        return dst.withUnsafeMutableBufferPointer { outBuf in
+            temp16.withUnsafeBufferPointer { inBuf in
+                processPixelsGPU(inputPixels: inBuf.baseAddress!,
+                                  outputPixels: outBuf.baseAddress!,
+                                  pixelCount: numPixels,
+                                  winMin: winMin,
+                                  winMax: winMax,
+                                  inComponents: 1)
+            }
+        }
+#else
+        return false
+#endif
     }
 
 
@@ -627,7 +689,7 @@ public final class DicomPixelView: UIView {
         var uCount = UInt32(pixelCount)
         var sWinMin = Int32(winMin)
         var uDenom = UInt32(width)
-        var invert: Bool = false
+        var invert: Bool = self.inverted
         var uComp = UInt32(inComponents)
         var uOutComp = UInt32(samplesPerPixel)
 
