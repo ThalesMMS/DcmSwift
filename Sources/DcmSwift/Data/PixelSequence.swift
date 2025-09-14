@@ -68,6 +68,15 @@ class PixelSequence: DataSequence {
         }
     }
     
+    /// Returns the exact frame data for a given frame index using BOT (Basic Offset Table) for precise extraction.
+    /// This is the preferred method for encapsulated frames as it provides exact byte boundaries.
+    /// - Parameter index: Frame index (0-based)
+    /// - Returns: Exact frame data bytes
+    /// - Throws: PXError if frame index is out of range or no fragments available
+    func frameData(at index: Int) throws -> Data {
+        return try frameCodestream(at: index)
+    }
+    
     
     public override func toData(vrMethod inVrMethod:VRMethod = .Explicit, byteOrder inByteOrder:ByteOrder = .LittleEndian) -> Data {
         var data = Data()

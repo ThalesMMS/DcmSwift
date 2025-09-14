@@ -42,6 +42,65 @@ kernel void windowLevelKernel(
     }
 }
 
+// MARK: - Render Pipeline Shaders
+
+// Vertex shader for full-screen quad
+struct VertexOut {
+    float4 position [[position]];
+    float2 texCoord;
+};
+
+vertex VertexOut vertex_main(uint vertexID [[vertex_id]],
+                            constant float4* vertices [[buffer(0)]]) {
+    VertexOut out;
+    out.position = vertices[vertexID];
+    out.texCoord = vertices[vertexID].xy * 0.5 + 0.5; // Convert to 0-1 range
+    return out;
+}
+
+// Parameters struct for window/level shader
+struct WLParams {
+    float windowCenter;
+    float windowWidth;
+    float rescaleSlope;
+    float rescaleIntercept;
+    bool inverted;
+    float imageWidth;
+    float imageHeight;
+};
+
+// Fragment shader for window/level with 16-bit input
+fragment float4 fragment_wl(VertexOut in [[stage_in]],
+                           texture2d<ushort> sourceTexture [[texture(0)]],
+                           constant WLParams& params [[buffer(0)]]) {
+    constexpr sampler textureSampler(mag_filter::linear, min_filter::linear);
+    
+    float2 texCoord = in.texCoord;
+    ushort rawValue = sourceTexture.sample(textureSampler, texCoord).r;
+    
+    // Apply rescale: HU = raw * slope + intercept
+    float hu = float(rawValue) * params.rescaleSlope + params.rescaleIntercept;
+    
+    // Apply window/level: normalize to 0-1 range
+    float normalized = (hu - params.windowCenter + params.windowWidth * 0.5) / max(1.0, params.windowWidth);
+    normalized = clamp(normalized, 0.0, 1.0);
+    
+    if (params.inverted) {
+        normalized = 1.0 - normalized;
+    }
+    
+    return float4(normalized, normalized, normalized, 1.0);
+}
+
+// Fragment shader for RGB passthrough (no WL applied)
+fragment float4 fragment_rgb(VertexOut in [[stage_in]],
+                            texture2d<float> sourceTexture [[texture(0)]]) {
+    constexpr sampler textureSampler(mag_filter::linear, min_filter::linear);
+    return sourceTexture.sample(textureSampler, in.texCoord);
+}
+
+// MARK: - Compute Shaders
+
 // VOI LUT mapping: 16-bit input -> 8-bit output via LUT (8-bit entries)
 kernel void voiLUTKernel(
     device const ushort*   inPixels       [[ buffer(0) ]],

@@ -274,6 +274,13 @@ public final class DicomPixelView: UIView {
             defer { os_signpost(.end, log: spLog, name: "DicomPixelView.recomputeImage", signpostID: spid) }
         }
 #endif
+        
+        // Enhanced performance monitoring for rendering operations
+        let renderToken = RenderingPerformanceMonitor.shared.startFrameRender(seriesID: "local", frameIndex: 0)
+        defer { 
+            let duration = enablePerfMetrics ? (CFAbsoluteTimeGetCurrent() - t0) * 1000 : 0
+            RenderingPerformanceMonitor.shared.endFrameRender(renderToken, success: true)
+        }
         if debugLogsEnabled {
             print("[DicomPixelView] recomputeImage start size=\(imgWidth)x\(imgHeight) spp=\(samplesPerPixel) cacheValid=\(cachedImageDataValid)")
         }
@@ -324,7 +331,11 @@ public final class DicomPixelView: UIView {
             // Adopting the logic from the 'codex' branch for 16-bit processing.
             if let extLUT = lut16 {
                 // Try GPU first
-                if applyLUTTo16GPU(src16, lut: extLUT, into: &cachedImageData!, components: srcSamplesPerPixel) {
+                let gpuToken = RenderingPerformanceMonitor.shared.startGPUOperation(.windowLevelCompute)
+                let gpuSuccess = applyLUTTo16GPU(src16, lut: extLUT, into: &cachedImageData!, components: srcSamplesPerPixel)
+                RenderingPerformanceMonitor.shared.endGPUOperation(gpuToken, success: gpuSuccess)
+                
+                if gpuSuccess {
                     if debugLogsEnabled { print("[DicomPixelView] path=16-bit external LUT GPU") }
                 } else {
                     if debugLogsEnabled { print("[DicomPixelView] path=16-bit external LUT CPU") }
@@ -335,18 +346,24 @@ public final class DicomPixelView: UIView {
                         print("[PERF][DicomPixelView] LUT16CPU.ms=\(String(format: "%.3f", dt)) comps=\(srcSamplesPerPixel)")
                     }
                 }
-            } else if applyWindowTo16GPU(src16, srcSamples: srcSamplesPerPixel, into: &cachedImageData!) {
-                if debugLogsEnabled { print("[DicomPixelView] path=16-bit GPU WL") }
             } else {
-                if debugLogsEnabled { print("[DicomPixelView] path=16-bit CPU LUT fallback") }
-                let tL = enablePerfMetrics ? CFAbsoluteTimeGetCurrent() : 0
-                let lut = buildDerivedLUT16(winMin: winMin, winMax: winMax)
-                let tA = enablePerfMetrics ? CFAbsoluteTimeGetCurrent() : 0
-                applyLUTTo16CPU(src16, lut: lut, into: &cachedImageData!, components: srcSamplesPerPixel)
-                if enablePerfMetrics {
-                    let dtL = (CFAbsoluteTimeGetCurrent() - tL) * 1000
-                    let dtA = (CFAbsoluteTimeGetCurrent() - tA) * 1000
-                    print("[PERF][DicomPixelView] LUTgen.ms=\(String(format: "%.3f", dtL)) apply.ms=\(String(format: "%.3f", dtA)) comps=\(srcSamplesPerPixel)")
+                let gpuToken = RenderingPerformanceMonitor.shared.startGPUOperation(.windowLevelCompute)
+                let gpuSuccess = applyWindowTo16GPU(src16, srcSamples: srcSamplesPerPixel, into: &cachedImageData!)
+                RenderingPerformanceMonitor.shared.endGPUOperation(gpuToken, success: gpuSuccess)
+                
+                if gpuSuccess {
+                    if debugLogsEnabled { print("[DicomPixelView] path=16-bit GPU WL") }
+                } else {
+                    if debugLogsEnabled { print("[DicomPixelView] path=16-bit CPU LUT fallback") }
+                    let tL = enablePerfMetrics ? CFAbsoluteTimeGetCurrent() : 0
+                    let lut = buildDerivedLUT16(winMin: winMin, winMax: winMax)
+                    let tA = enablePerfMetrics ? CFAbsoluteTimeGetCurrent() : 0
+                    applyLUTTo16CPU(src16, lut: lut, into: &cachedImageData!, components: srcSamplesPerPixel)
+                    if enablePerfMetrics {
+                        let dtL = (CFAbsoluteTimeGetCurrent() - tL) * 1000
+                        let dtA = (CFAbsoluteTimeGetCurrent() - tA) * 1000
+                        print("[PERF][DicomPixelView] LUTgen.ms=\(String(format: "%.3f", dtL)) apply.ms=\(String(format: "%.3f", dtA)) comps=\(srcSamplesPerPixel)")
+                    }
                 }
             }
         } else {

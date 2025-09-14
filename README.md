@@ -237,19 +237,23 @@ The library achieves excellent performance through its multi-tier optimization s
 
 | Operation | Performance | Notes |
 |-----------|------------|-------|
-| **Window/Level (Metal)** | ~2ms for 512×512 | GPU-accelerated |
-| **Window/Level (CPU)** | ~8ms for 512×512 | vDSP vectorized |
+| **Window/Level (Metal)** | ~2ms for 512×512 | GPU-accelerated with VOI LUT support |
+| **Window/Level (CPU)** | ~8ms for 512×512 | vDSP vectorized with fallback |
 | **JPEG Decode** | ~15ms for 512×512 | Native decompression |
-| **C-FIND Query** | ~50ms | With PDU optimization |
-| **C-GET Transfer** | ~1.2s/MB | Network dependent |
-| **Pixel Buffer Cache** | <1ms | Direct memory access |
+| **C-FIND Query** | ~50ms | With PDU optimization and packing fixes |
+| **C-GET Transfer** | ~1.2s/MB | Network dependent with improved reassembly |
+| **Pixel Buffer Cache** | <1ms | Direct memory access with byte-based limits |
+| **Memory-Mapped I/O** | ~1-3ms savings | Zero-copy frame access for large series |
+| **Adaptive Prefetch** | ±2 to ±16 frames | Dynamic based on scroll velocity |
 
 ### Memory Usage
 
 - **Streaming Mode**: Constant memory regardless of file size
-- **Cached Mode**: ~4MB per 512×512 16-bit image
+- **Cached Mode**: ~4MB per 512×512 16-bit image with configurable limits
 - **Metal Buffers**: Reused across frames to minimize allocation
-- **Automatic Eviction**: NSCache-based management in client apps
+- **Automatic Eviction**: NSCache-based management with byte-based cost calculation
+- **Memory-Mapped I/O**: Optional zero-copy access for large multiframe files
+- **Adaptive Prefetch**: Ring buffer with velocity-based distance (±2 to ±16 frames)
 
 ## ROI Measurement Service
 

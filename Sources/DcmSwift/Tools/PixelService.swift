@@ -67,18 +67,23 @@ public final class PixelService: @unchecked Sendable {
     private let oslog = DummyLogger()
 #endif
 
-    /// Decode the first available frame in the dataset into a display-ready buffer.
+    /// Decode a specific frame from the dataset into a display-ready buffer.
+    /// - Parameters:
+    ///   - dataset: DICOM dataset containing pixel data
+    ///   - frameIndex: Frame index to decode (0-based)
+    /// - Returns: Decoded frame with pixel data
     /// - Note: For color images this returns raw 8-bit data; consumers may convert as needed.
     @available(iOS 14.0, macOS 11.0, *)
-    public func decodeFirstFrame(from dataset: DataSet) throws -> DecodedFrame {
+    public func decodeFrame(from dataset: DataSet, frameIndex: Int) throws -> DecodedFrame {
         let debug = UserDefaults.standard.bool(forKey: "settings.debugLogsEnabled")
         let t0 = CFAbsoluteTimeGetCurrent()
 #if canImport(os)
         let perf = UserDefaults.standard.bool(forKey: "settings.perfMetricsEnabled")
+        let spid = OSSignpostID(log: spLog)
         if perf, #available(iOS 14.0, macOS 11.0, *) {
-            let spid = OSSignpostID(log: spLog)
-            os_signpost(.begin, log: spLog, name: "PixelService.decodeFirstFrame", signpostID: spid)
-            defer { os_signpost(.end, log: spLog, name: "PixelService.decodeFirstFrame", signpostID: spid) }
+            os_signpost(.begin, log: spLog, name: "PixelService.decodeFrame", signpostID: spid, 
+                       "frameIndex=%d", frameIndex)
+            defer { os_signpost(.end, log: spLog, name: "PixelService.decodeFrame", signpostID: spid) }
         }
 #endif
         var rows = Int(dataset.integer16(forTag: "Rows") ?? 0)
@@ -95,7 +100,27 @@ public final class PixelService: @unchecked Sendable {
         if let ts = dataset.transferSyntax, (ts.isJPEG2000Part1 || ts.isHTJ2K),
            let element = dataset.element(forTagName: "PixelData") as? PixelSequence {
             if debug { print("[PixelService] JPEG2000/HTJ2K detected; decoding via ImageIO") }
-            guard let codestream = try? element.frameCodestream(at: 0) else { throw PixelServiceError.missingPixelData }
+#if canImport(os)
+            if perf, #available(iOS 14.0, macOS 11.0, *) {
+                os_signpost(.begin, log: spLog, name: "PixelService.frameExtraction", signpostID: spid, 
+                           "transferSyntax=%{public}s", ts.tsUID)
+            }
+#endif
+            guard let codestream = try? element.frameData(at: frameIndex) else { 
+#if canImport(os)
+                if perf, #available(iOS 14.0, macOS 11.0, *) {
+                    os_signpost(.end, log: spLog, name: "PixelService.frameExtraction", signpostID: spid)
+                }
+#endif
+                throw PixelServiceError.missingPixelData 
+            }
+#if canImport(os)
+            if perf, #available(iOS 14.0, macOS 11.0, *) {
+                os_signpost(.end, log: spLog, name: "PixelService.frameExtraction", signpostID: spid)
+                os_signpost(.begin, log: spLog, name: "PixelService.imageDecode", signpostID: spid, 
+                           "codestreamSize=%d", codestream.count)
+            }
+#endif
             // Prefer native 16-bit decoder when requested (guarded by compile flag)
             #if DCMSWIFT_ENABLE_NATIVE_J2K
             if UserDefaults.standard.bool(forKey: "settings.decoderPrefer16Bit"),
@@ -165,15 +190,45 @@ public final class PixelService: @unchecked Sendable {
                                        pixels8: rgb, pixels16: nil,
                                        rescaleSlope: 1.0, rescaleIntercept: 0.0,
                                        photometricInterpretation: "RGB")
+#if canImport(os)
+                if perf, #available(iOS 14.0, macOS 11.0, *) {
+                    os_signpost(.end, log: spLog, name: "PixelService.imageDecode", signpostID: spid)
+                }
+#endif
                 return out
             }
+#if canImport(os)
+            if perf, #available(iOS 14.0, macOS 11.0, *) {
+                os_signpost(.end, log: spLog, name: "PixelService.imageDecode", signpostID: spid)
+            }
+#endif
         }
 
         // JPEG Baseline/Extended (8-bit baseline, 12-bit likely unsupported on iOS)
         if let ts = dataset.transferSyntax, ts.isJPEGBaselineOrExtended,
            let element = dataset.element(forTagName: "PixelData") as? PixelSequence {
             if debug { print("[PixelService] JPEG Baseline/Extended detected; decoding via ImageIO") }
-            guard let jpegs = try? element.frameCodestream(at: 0) else { throw PixelServiceError.missingPixelData }
+#if canImport(os)
+            if perf, #available(iOS 14.0, macOS 11.0, *) {
+                os_signpost(.begin, log: spLog, name: "PixelService.frameExtraction", signpostID: spid, 
+                           "transferSyntax=%{public}s", ts.tsUID)
+            }
+#endif
+            guard let jpegs = try? element.frameData(at: frameIndex) else { 
+#if canImport(os)
+                if perf, #available(iOS 14.0, macOS 11.0, *) {
+                    os_signpost(.end, log: spLog, name: "PixelService.frameExtraction", signpostID: spid)
+                }
+#endif
+                throw PixelServiceError.missingPixelData 
+            }
+#if canImport(os)
+            if perf, #available(iOS 14.0, macOS 11.0, *) {
+                os_signpost(.end, log: spLog, name: "PixelService.frameExtraction", signpostID: spid)
+                os_signpost(.begin, log: spLog, name: "PixelService.imageDecode", signpostID: spid, 
+                           "codestreamSize=%d", jpegs.count)
+            }
+#endif
             do {
                 let cg = try JPEGBaselineDecoder.decode(jpegs)
                 // Dimensions from decoded image
@@ -193,9 +248,19 @@ public final class PixelService: @unchecked Sendable {
                     let dt = (CFAbsoluteTimeGetCurrent() - t0) * 1000
                     print("[PixelService] jpeg 8-bit decode dt=\(String(format: "%.1f", dt)) ms size=\(cols)x\(rows)")
                 }
+#if canImport(os)
+                if perf, #available(iOS 14.0, macOS 11.0, *) {
+                    os_signpost(.end, log: spLog, name: "PixelService.imageDecode", signpostID: spid)
+                }
+#endif
                 return out
             } catch {
                 if debug { print("[PixelService] JPEG decode failed: \(error)") }
+#if canImport(os)
+                if perf, #available(iOS 14.0, macOS 11.0, *) {
+                    os_signpost(.end, log: spLog, name: "PixelService.imageDecode", signpostID: spid)
+                }
+#endif
                 throw PixelServiceError.missingPixelData
             }
         }
@@ -204,7 +269,7 @@ public final class PixelService: @unchecked Sendable {
         if let ts = dataset.transferSyntax, ts.isJPEGLS,
            let element = dataset.element(forTagName: "PixelData") as? PixelSequence {
             if debug { print("[PixelService] JPEG-LS detected") }
-            guard let jlsData = try? element.frameCodestream(at: 0) else { throw PixelServiceError.missingPixelData }
+            guard let jlsData = try? element.frameData(at: frameIndex) else { throw PixelServiceError.missingPixelData }
             do {
                 let comps = Int(dataset.integer16(forTag: "SamplesPerPixel") ?? 1)
                 let res = try JPEGLSDecoder.decode(jlsData, expectedWidth: cols, expectedHeight: rows, expectedComponents: comps, bitsPerSample: bitsAllocated)
@@ -239,7 +304,7 @@ public final class PixelService: @unchecked Sendable {
         if let ts = dataset.transferSyntax, ts.isRLE,
            let element = dataset.element(forTagName: "PixelData") as? PixelSequence {
             if debug { print("[PixelService] RLE detected; decoding") }
-            guard let rleData = try? element.frameCodestream(at: 0) else { throw PixelServiceError.missingPixelData }
+            guard let rleData = try? element.frameData(at: frameIndex) else { throw PixelServiceError.missingPixelData }
             let spp = Int(dataset.integer16(forTag: "SamplesPerPixel") ?? 1)
             do {
                 let decoded = try RLEDecoder.decode(frameData: rleData, rows: rows, cols: cols, bitsAllocated: bitsAllocated, samplesPerPixel: spp)
@@ -270,7 +335,27 @@ public final class PixelService: @unchecked Sendable {
             }
         }
 
-        guard let data = firstFramePixelData(from: dataset) else { throw PixelServiceError.missingPixelData }
+#if canImport(os)
+        if perf, #available(iOS 14.0, macOS 11.0, *) {
+            os_signpost(.begin, log: spLog, name: "PixelService.frameExtraction", signpostID: spid, 
+                       "transferSyntax=native")
+        }
+#endif
+        guard let data = pixelDataForFrame(from: dataset, frameIndex: frameIndex) else { 
+#if canImport(os)
+            if perf, #available(iOS 14.0, macOS 11.0, *) {
+                os_signpost(.end, log: spLog, name: "PixelService.frameExtraction", signpostID: spid)
+            }
+#endif
+            throw PixelServiceError.missingPixelData 
+        }
+#if canImport(os)
+        if perf, #available(iOS 14.0, macOS 11.0, *) {
+            os_signpost(.end, log: spLog, name: "PixelService.frameExtraction", signpostID: spid)
+            os_signpost(.begin, log: spLog, name: "PixelService.imageDecode", signpostID: spid, 
+                       "dataSize=%d bitsAllocated=%d", data.count, bitsAllocated)
+        }
+#endif
 
         if bitsAllocated > 8 {
             let pixels16 = toUInt16ArrayLE(data)
@@ -286,6 +371,11 @@ public final class PixelService: @unchecked Sendable {
                     print("[PixelService] decode16 dt=\(String(format: "%.1f", dt)) ms size=\(cols)x\(rows) bits=\(bitsAllocated)")
                 }
             }
+#if canImport(os)
+            if perf, #available(iOS 14.0, macOS 11.0, *) {
+                os_signpost(.end, log: spLog, name: "PixelService.imageDecode", signpostID: spid)
+            }
+#endif
             return out
         } else {
             let pixels8 = [UInt8](data)
@@ -301,35 +391,127 @@ public final class PixelService: @unchecked Sendable {
                     print("[PixelService] decode8 dt=\(String(format: "%.1f", dt)) ms size=\(cols)x\(rows) bits=\(bitsAllocated)")
                 }
             }
+#if canImport(os)
+            if perf, #available(iOS 14.0, macOS 11.0, *) {
+                os_signpost(.end, log: spLog, name: "PixelService.imageDecode", signpostID: spid)
+            }
+#endif
             return out
         }
+    }
+    
+    /// Decode the first available frame in the dataset into a display-ready buffer.
+    /// - Note: For color images this returns raw 8-bit data; consumers may convert as needed.
+    @available(iOS 14.0, macOS 11.0, *)
+    public func decodeFirstFrame(from dataset: DataSet) throws -> DecodedFrame {
+        return try decodeFrame(from: dataset, frameIndex: 0)
     }
 
     // MARK: - Internals (mirrors common helpers consolidated here)
 
     private func firstFramePixelData(from dataset: DataSet) -> Data? {
+        return pixelDataForFrame(from: dataset, frameIndex: 0)
+    }
+    
+    /// Extract pixel data for a specific frame index from the dataset.
+    /// Handles both encapsulated (with BOT) and non-encapsulated multiframe data.
+    /// - Parameters:
+    ///   - dataset: DICOM dataset containing pixel data
+    ///   - frameIndex: Frame index (0-based)
+    /// - Returns: Frame pixel data or nil if not available
+    public func pixelDataForFrame(from dataset: DataSet, frameIndex: Int) -> Data? {
         guard let element = dataset.element(forTagName: "PixelData") else { return nil }
+        
         if let px = element as? PixelSequence {
-            // Encapsulated: use sequence reassembly when possible
+            // Encapsulated: use BOT-based frame extraction
             if let ts = dataset.transferSyntax, ts.isJPEG2000Part1 || ts.isRLE || ts.isJPEGBaselineOrExtended || ts.isJPEGLS || ts.isHTJ2K {
-                // Try robust reassembly for frame 0
-                if let data = try? px.frameCodestream(at: 0) { return data }
+                // Use precise frame extraction with BOT
+                if let data = try? px.frameData(at: frameIndex) { return data }
             }
-            // Fallback: first non-empty item data
-            for item in px.items { if item.length > 0, let data = item.data, data.count > 0 { return data } }
+            // Fallback: first non-empty item data for frame 0
+            if frameIndex == 0 {
+                for item in px.items { if item.length > 0, let data = item.data, data.count > 0 { return data } }
+            }
             return nil
         } else {
             // Native (uncompressed) data: handle single or multi-frame contiguous buffers
             if let framesString = dataset.string(forTag: "NumberOfFrames"), let frames = Int(framesString), frames > 1, element.length > 0, frames > 0 {
                 let frameSize = element.length / frames
-                let arr = element.data.toUnsigned8Array()
-                if frameSize > 0, arr.count >= frameSize {
-                    return Data(arr[0..<frameSize])
-                }
-                return nil
+                guard frameIndex >= 0 && frameIndex < frames && frameSize > 0 else { return nil }
+                let startOffset = frameIndex * frameSize
+                let endOffset = min(startOffset + frameSize, element.data.count)
+                guard startOffset < element.data.count else { return nil }
+                return element.data.subdata(in: startOffset..<endOffset)
             } else {
-                return element.data
+                // Single frame: return all data for frame 0, nil for others
+                return frameIndex == 0 ? element.data : nil
             }
+        }
+    }
+    
+    /// Phase 4: Get frame pixel data using memory-mapped file for zero-copy access
+    /// - Parameters:
+    ///   - dicomFile: The DicomFile with memory mapping enabled
+    ///   - frameIndex: Index of the frame to retrieve (0-based)
+    /// - Returns: Frame pixel data or nil if not available
+    public func pixelDataForFrame(from dicomFile: DicomFile, frameIndex: Int) -> Data? {
+        // Use the new zero-copy method if memory mapping is enabled
+        if dicomFile.isMemoryMapped {
+            return dicomFile.frameData(at: frameIndex)
+        } else {
+            // Fallback to traditional method
+            return pixelDataForFrame(from: dicomFile.dataset, frameIndex: frameIndex)
+        }
+    }
+    
+    /// Phase 4: Decode a specific frame from raw frame data (for memory-mapped files)
+    /// - Parameters:
+    ///   - dataset: DICOM dataset containing metadata
+    ///   - frameData: Raw frame data bytes
+    ///   - frameIndex: Index of the frame (0-based)
+    /// - Returns: Decoded frame with pixel data
+    /// - Throws: PixelServiceError if decoding fails
+    public func decodeFrame(from dataset: DataSet, frameData: Data, frameIndex: Int) throws -> DecodedFrame {
+        guard let rows = dataset.integer32(forTag: "Rows"),
+              let cols = dataset.integer32(forTag: "Columns"),
+              let bitsAllocated = dataset.integer32(forTag: "BitsAllocated"),
+              let samplesPerPixel = dataset.integer32(forTag: "SamplesPerPixel") else {
+            throw PixelServiceError.invalidDataset
+        }
+        
+        let rescaleSlope = Double(dataset.string(forTag: "RescaleSlope") ?? "") ?? 1.0
+        let rescaleIntercept = Double(dataset.string(forTag: "RescaleIntercept") ?? "") ?? 0.0
+        let photometricInterpretation = dataset.string(forTag: "PhotometricInterpretation")
+        
+        // Decode based on bits allocated
+        if bitsAllocated == 8 {
+            let pixels8 = Array(frameData)
+            return DecodedFrame(
+                id: "frame_\(frameIndex)",
+                width: Int(cols),
+                height: Int(rows),
+                bitsAllocated: Int(bitsAllocated),
+                pixels8: pixels8,
+                pixels16: nil,
+                rescaleSlope: rescaleSlope,
+                rescaleIntercept: rescaleIntercept,
+                photometricInterpretation: photometricInterpretation
+            )
+        } else if bitsAllocated == 16 {
+            let pixels16 = toUInt16ArrayLE(frameData)
+            return DecodedFrame(
+                id: "frame_\(frameIndex)",
+                width: Int(cols),
+                height: Int(rows),
+                bitsAllocated: Int(bitsAllocated),
+                pixels8: nil,
+                pixels16: pixels16,
+                rescaleSlope: rescaleSlope,
+                rescaleIntercept: rescaleIntercept,
+                photometricInterpretation: photometricInterpretation
+            )
+        } else {
+            throw PixelServiceError.invalidDimensions
         }
     }
 

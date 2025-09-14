@@ -35,28 +35,43 @@ public class CStoreSCP: ServiceClassProvider {
     
     
     public override func reply(request: PDUMessage?, association:DicomAssociation, channel:Channel) -> EventLoopFuture<Void> {
-        print("request \(request)")
+        Logger.debug("CStoreSCP: Received request: \(String(describing: request))")
         
-//        if let message = PDUEncoder.createDIMSEMessage(pduType: .dataTF, commandField: self.commandField, association: association) as? PDUMessage {
-//
-//            message.requestMessage = self.requestMessage
-//            message.dimseStatus = DIMSEStatus(status: .Success, command: self.commandField)
-//
-//            self.requestMessage = nil
-//
-//            if delegate != nil && association.callingAE != nil {
-//                let status = delegate!.validateEcho(callingAE: association.callingAE!)
-//
-//                if status != .Success {
-//                    return channel.eventLoop.makeFailedFuture(NetworkError.callingAETitleNotRecognized)
-//                }
-//            }
-//
-//            let p:EventLoopPromise<Void> = channel.eventLoop.makePromise()
-//
-//            return association.write(message: message, promise: p)
-//        }
+        guard let storeRequest = request as? CStoreRQ else {
+            Logger.error("CStoreSCP: Invalid request type")
+            return channel.eventLoop.makeFailedFuture(NetworkError.invalidRequest)
+        }
         
-        return channel.eventLoop.makeFailedFuture(NetworkError.internalError)
+        // Phase 5: Handle C-STORE request properly
+        guard let message = PDUEncoder.createDIMSEMessage(pduType: .dataTF, commandField: self.commandField, association: association) as? CStoreRSP else {
+            Logger.error("CStoreSCP: Failed to create C-STORE-RSP message")
+            return channel.eventLoop.makeFailedFuture(NetworkError.internalError)
+        }
+        
+        // Set up the response message
+        message.requestMessage = storeRequest
+        message.dimseStatus = DIMSEStatus(status: .Success, command: self.commandField)
+        
+        // Process the received dataset if delegate is available
+        var storageSuccess = true
+        if let delegate = delegate, let dataset = storeRequest.dataset {
+            // Create temporary file path
+            let tempFile = NSTemporaryDirectory() + "\(UUID().uuidString).dcm"
+            
+            // Call delegate to handle storage
+            storageSuccess = delegate.store(fileMetaInfo: DataSet(), dataset: dataset, tempFile: tempFile)
+            
+            if !storageSuccess {
+                Logger.warning("CStoreSCP: Storage failed, returning OutOfResources status")
+                message.dimseStatus = DIMSEStatus(status: .OutOfResources, command: self.commandField)
+            } else {
+                Logger.info("CStoreSCP: Successfully stored dataset")
+            }
+        } else {
+            Logger.warning("CStoreSCP: No delegate available, accepting without storage")
+        }
+        
+        let p: EventLoopPromise<Void> = channel.eventLoop.makePromise()
+        return association.write(message: message, promise: p)
     }
 }
