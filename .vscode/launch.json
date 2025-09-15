@@ -161,6 +161,24 @@
             "name": "Release DcmMove",
             "program": "${workspaceFolder:DcmSwift}/.build/release/DcmMove",
             "preLaunchTask": "swift: Build Release DcmMove"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:DcmSwift}",
+            "name": "Debug DcmDecompress",
+            "program": "${workspaceFolder:DcmSwift}/.build/debug/DcmDecompress",
+            "preLaunchTask": "swift: Build Debug DcmDecompress"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:DcmSwift}",
+            "name": "Release DcmDecompress",
+            "program": "${workspaceFolder:DcmSwift}/.build/release/DcmDecompress",
+            "preLaunchTask": "swift: Build Release DcmDecompress"
         }
     ]
 }
