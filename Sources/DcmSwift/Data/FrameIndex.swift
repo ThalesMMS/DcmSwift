@@ -30,6 +30,9 @@ public struct FrameInfo {
 public final class FrameIndex {
     private let frames: [FrameInfo]
     private let totalFrames: Int
+
+    /// Maximum supported frame size (512MB) to protect against resource exhaustion.
+    private static let maxFrameSize = 512 * 1024 * 1024
     
     /// Initialize frame index from a dataset
     /// - Parameter dataset: The parsed DICOM dataset
@@ -100,15 +103,23 @@ private extension FrameIndex {
                 throw FrameIndexError.noFramesFound
             }
 
+            try validateBasicOffsetTable(offsets, totalFragmentLength: totalFragmentLength)
+
             for (index, startOffset) in offsets.enumerated() {
-                let nextOffset = (index + 1 < offsets.count) ? offsets[index + 1] : totalFragmentLength
-                let clampedNextOffset = min(max(nextOffset, startOffset), totalFragmentLength)
-                let length = clampedNextOffset - startOffset
+                let endOffset = (index + 1 < offsets.count) ? offsets[index + 1] : totalFragmentLength
 
-                guard length > 0 else { continue }
+                let length = endOffset - startOffset
+                guard length > 0 else {
+                    throw FrameIndexError.invalidBOTOffsets
+                }
+                guard length <= maxFrameSize else {
+                    throw FrameIndexError.frameTooLarge
+                }
 
-                // Add base offset to get absolute file position
-                let absoluteOffset = baseOffset + startOffset
+                let (absoluteOffset, overflow) = baseOffset.addingReportingOverflow(startOffset)
+                guard !overflow else {
+                    throw FrameIndexError.invalidBOTOffsets
+                }
 
                 frameInfos.append(FrameInfo(offset: absoluteOffset,
                                           length: length,
@@ -117,6 +128,9 @@ private extension FrameIndex {
         } else {
             // No BOT - treat as single frame (fallback)
             if totalFragmentLength > 0 {
+                guard totalFragmentLength <= maxFrameSize else {
+                    throw FrameIndexError.frameTooLarge
+                }
                 frameInfos.append(FrameInfo(offset: baseOffset,
                                           length: totalFragmentLength,
                                           isEncapsulated: true))
@@ -142,40 +156,78 @@ private extension FrameIndex {
             throw FrameIndexError.missingRequiredTags
         }
         
-        let bytesPerSample = (bitsAllocated + 7) / 8
-        let frameSize = rows * cols * samplesPerPixel * bytesPerSample
-        
-        guard frameSize > 0 else {
+        let bytesPerSample = Int((bitsAllocated + 7) / 8)
+
+        let rowsValue = Int(rows)
+        let colsValue = Int(cols)
+        let samplesValue = Int(samplesPerPixel)
+
+        guard rowsValue > 0, colsValue > 0, samplesValue > 0, bytesPerSample > 0 else {
             throw FrameIndexError.invalidFrameSize
         }
-        
+
+        let frameSize64 = Int64(rowsValue) * Int64(colsValue) * Int64(samplesValue) * Int64(bytesPerSample)
+        guard frameSize64 > 0 else {
+            throw FrameIndexError.invalidFrameSize
+        }
+        guard frameSize64 <= Int64(maxFrameSize) else {
+            throw FrameIndexError.frameTooLarge
+        }
+
+        let frameSize = Int(frameSize64)
+
         // Check if this is a multiframe
         if let numberOfFramesString = dataset.string(forTag: "NumberOfFrames"),
            let numberOfFrames = Int(numberOfFramesString), numberOfFrames > 1 {
-            
+
             // Multiframe: calculate offsets for each frame
             let totalPixelDataLength = pixelDataElement.length
             let actualFrameSize = totalPixelDataLength / numberOfFrames
-            
+
             // Validate that frames fit exactly
             guard actualFrameSize == frameSize else {
                 throw FrameIndexError.frameSizeMismatch(expected: Int(frameSize), actual: actualFrameSize)
             }
-            
+
             for i in 0..<numberOfFrames {
                 let offset = pixelDataElement.dataOffset + (i * Int(frameSize))
-                frameInfos.append(FrameInfo(offset: offset, 
-                                          length: Int(frameSize), 
+                frameInfos.append(FrameInfo(offset: offset,
+                                          length: Int(frameSize),
                                           isEncapsulated: false))
             }
         } else {
             // Single frame: use entire pixel data
-            frameInfos.append(FrameInfo(offset: pixelDataElement.dataOffset, 
-                                      length: pixelDataElement.length, 
+            guard pixelDataElement.length <= maxFrameSize else {
+                throw FrameIndexError.frameTooLarge
+            }
+            frameInfos.append(FrameInfo(offset: pixelDataElement.dataOffset,
+                                      length: pixelDataElement.length,
                                       isEncapsulated: false))
         }
-        
+
         return frameInfos
+    }
+
+    static func validateBasicOffsetTable(_ offsets: [Int], totalFragmentLength: Int) throws {
+        guard totalFragmentLength > 0 else {
+            throw FrameIndexError.invalidBOTOffsets
+        }
+
+        var previousOffset = -1
+        for offset in offsets {
+            guard offset >= 0 else {
+                throw FrameIndexError.invalidBOTOffsets
+            }
+            guard offset < totalFragmentLength else {
+                throw FrameIndexError.invalidBOTOffsets
+            }
+            if previousOffset >= 0 {
+                guard offset > previousOffset else {
+                    throw FrameIndexError.invalidBOTOffsets
+                }
+            }
+            previousOffset = offset
+        }
     }
 }
 
@@ -187,7 +239,9 @@ public enum FrameIndexError: Error, LocalizedError {
     case missingRequiredTags
     case invalidFrameSize
     case frameSizeMismatch(expected: Int, actual: Int)
-    
+    case invalidBOTOffsets
+    case frameTooLarge
+
     public var errorDescription: String? {
         switch self {
         case .noPixelData:
@@ -200,6 +254,10 @@ public enum FrameIndexError: Error, LocalizedError {
             return "Invalid frame size calculated from pixel data dimensions"
         case .frameSizeMismatch(let expected, let actual):
             return "Frame size mismatch: expected \(expected) bytes, got \(actual) bytes"
+        case .invalidBOTOffsets:
+            return "Basic Offset Table contains invalid or non-monotonic offsets"
+        case .frameTooLarge:
+            return "Frame size exceeds maximum supported size"
         }
     }
 }
