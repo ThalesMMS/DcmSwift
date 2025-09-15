@@ -185,6 +185,13 @@ public class TransferSyntax: CustomStringConvertible, Equatable {
      */
     public static let JPEG2000Part2 = "1.2.840.10008.1.2.4.93"
     
+    /**
+     Transfer Syntax : High-Throughput JPEG 2000 (HTJ2K)
+     */
+    public static let HTJ2KLossless = "1.2.840.10008.1.2.4.201"
+    public static let HTJ2KLosslessRPCL = "1.2.840.10008.1.2.4.202"
+    public static let HTJ2K = "1.2.840.10008.1.2.4.203"
+    
     
     public var tsUID:String         = "1.2.840.10008.1.2.1"
     public var tsName:String        = DicomSpec.shared.nameForUID(withUID: "1.2.840.10008.1.2.1")
@@ -220,5 +227,44 @@ public class TransferSyntax: CustomStringConvertible, Equatable {
     
     public var description: String {
         return "\(tsName) (\(tsUID))"
+    }
+}
+
+// MARK: - Helpers
+public extension TransferSyntax {
+    var isUncompressed: Bool {
+        return tsUID == TransferSyntax.implicitVRLittleEndian ||
+               tsUID == TransferSyntax.explicitVRLittleEndian ||
+               tsUID == TransferSyntax.explicitVRBigEndian
+    }
+
+    var isJPEG2000Part1: Bool {
+        return tsUID == TransferSyntax.JPEG2000LosslessOnly ||
+               tsUID == TransferSyntax.JPEG2000
+    }
+
+    var isHTJ2K: Bool {
+        return tsUID == TransferSyntax.HTJ2KLossless ||
+               tsUID == TransferSyntax.HTJ2KLosslessRPCL ||
+               tsUID == TransferSyntax.HTJ2K
+    }
+
+    var isRLE: Bool {
+        return tsUID == "1.2.840.10008.1.2.5"
+    }
+
+    var isJPEGLS: Bool {
+        return tsUID == TransferSyntax.JPEGLSLossless ||
+               tsUID == TransferSyntax.JPEGLSLossy
+    }
+
+    var isJPEGBaselineOrExtended: Bool {
+        return tsUID == TransferSyntax.JPEGLossy8bit ||
+               tsUID == TransferSyntax.JPEGLossy12bit ||
+               tsUID == TransferSyntax.JPEGExtended
+    }
+
+    var isDeflated: Bool {
+        return tsUID == "1.2.840.10008.1.2.1.99"
     }
 }

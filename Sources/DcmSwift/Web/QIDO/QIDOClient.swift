@@ -1,3 +1,9 @@
+// QIDOClient.swift
+//  DcmSwift
+//
+//  Created by Thales on 2025/09/08.
+//
+
 import Foundation
 
 /**

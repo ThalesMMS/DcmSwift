@@ -1,41 +1,42 @@
-//   CGetDIMSEPackingTests.swift
+//   CMoveDIMSEPackingTests.swift
 // 
 //   DcmSwift
 //
-//   Created by Thales on 2025/09/10.
+//   Created by Thales on 2025/09/11.
 // 
 
 import XCTest
 import DcmSwift
 import NIO
 
-final class CGetDIMSEPackingTests: XCTestCase {
-    func testCGet_CommandDataSetTypeAndPDVPacking() throws {
+final class CMoveDIMSEPackingTests: XCTestCase {
+    func testCMove_CommandDataSetTypeAndPDVPacking() throws {
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         defer { try? group.syncShutdownGracefully() }
 
-        let calling = DicomEntity(title: "IPHONE", hostname: "127.0.0.1", port: 4096)
-        let called = DicomEntity(title: "RADIANT", hostname: "127.0.0.1", port: 11112)
+        let calling = DicomEntity(title: "TEST_AE", hostname: "127.0.0.1", port: 4096)
+        let called = DicomEntity(title: "REMOTE", hostname: "127.0.0.1", port: 11112)
         let assoc = DicomAssociation(group: group, callingAE: calling, calledAE: called)
 
-        // Presentation Context for Study Root GET
-        let pcID: UInt8 = 1
-        let asuid = DicomConstants.StudyRootQueryRetrieveInformationModelGET
+        // Presentation Context for Study Root MOVE
+        let pcID: UInt8 = 5
+        let asuid = DicomConstants.StudyRootQueryRetrieveInformationModelMOVE
         let tsuid = TransferSyntax.explicitVRLittleEndian
         let pc = PresentationContext(abstractSyntax: asuid, transferSyntaxes: [tsuid], contextID: pcID)
         assoc.presentationContexts[pcID] = pc
         assoc.acceptedPresentationContexts[pcID] = pc
 
-        // Minimal GET query (Study level)
+        // Minimal MOVE query (Study level)
         let ds = DataSet()
         _ = ds.set(value: "STUDY", forTagName: "QueryRetrieveLevel")
         _ = ds.set(value: "1.2.3.4", forTagName: "StudyInstanceUID")
 
-        guard let msg = PDUEncoder.createDIMSEMessage(pduType: .dataTF, commandField: .C_GET_RQ, association: assoc) as? CGetRQ else {
-            return XCTFail("Failed to create CGetRQ")
+        guard let msg = PDUEncoder.createDIMSEMessage(pduType: .dataTF, commandField: .C_MOVE_RQ, association: assoc) as? CMoveRQ else {
+            return XCTFail("Failed to create CMoveRQ")
         }
         msg.queryDataset = ds
-        guard let bytes = msg.data() else { return XCTFail("CGetRQ.data() returned nil") }
+        msg.moveDestinationAET = "DEST_AE"
+        guard let bytes = msg.data() else { return XCTFail("CMoveRQ.data() returned nil") }
         XCTAssertTrue(msg.messagesData().isEmpty)
 
         XCTAssertEqual(bytes[0], PDUType.dataTF.rawValue)
@@ -61,8 +62,9 @@ final class CGetDIMSEPackingTests: XCTestCase {
         let cmdDS = try XCTUnwrap(try dis.readDataset(enforceVR: false))
         let dsType = try XCTUnwrap(cmdDS.integer16(forTag: "CommandDataSetType"))
         XCTAssertEqual(dsType, 0x0000)
+        XCTAssertEqual(cmdDS.string(forTag: "MoveDestination"), "DEST_AE")
 
-        // Dataset PDV
+        // Dataset PDV present
         let pdv2Len = bytes.subdata(in: offset..<(offset+4)).toUInt32(byteOrder: .BigEndian)
         offset += 4
         let pdv2pc = bytes.subdata(in: offset..<(offset+1)).toUInt8(byteOrder: .BigEndian)

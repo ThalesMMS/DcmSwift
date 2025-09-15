@@ -1,3 +1,9 @@
+//  ROIMeasurementService.swift
+//  DcmSwift
+//
+//  Created by Thales on 2025/09/08.
+//
+
 #if canImport(CoreGraphics)
 import Foundation
 #if canImport(CoreGraphics)

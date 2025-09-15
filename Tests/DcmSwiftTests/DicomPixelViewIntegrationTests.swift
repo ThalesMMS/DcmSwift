@@ -1,3 +1,10 @@
+//  DicomPixelViewIntegrationTests.swift
+// 
+//  DcmSwift
+//
+//  Created by Thales on 2025/09/10.
+// 
+
 #if canImport(UIKit)
 import XCTest
 @testable import DcmSwift

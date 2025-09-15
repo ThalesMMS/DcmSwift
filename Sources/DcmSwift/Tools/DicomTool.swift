@@ -1,4 +1,10 @@
-﻿#if canImport(UIKit)
+﻿//  DicomTool.swift
+//  DcmSwift
+//
+//  Created by Thales on 2025/09/08.
+//
+
+#if canImport(UIKit)
 import UIKit
 import Foundation
 

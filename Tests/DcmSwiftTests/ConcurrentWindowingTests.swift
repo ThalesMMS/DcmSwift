@@ -1,3 +1,9 @@
+// ConcurrentWindowingTests.swift
+//  DcmSwift
+//
+//  Created by Thales on 2025/09/10.
+// 
+
 import XCTest
 @testable import DcmSwift
 

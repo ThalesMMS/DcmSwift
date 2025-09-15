@@ -2,6 +2,8 @@
 //  MetalShaders.swift
 //  DcmSwift
 //
+//  Created by Thales on 2025/09/10.
+//
 //  Convenience API mirroring the Xcode 12 SPM pattern for loading
 //  module-local Metal shaders using Bundle.module. This sits alongside
 //  MetalAccelerator and can be used directly by hosts if desired.

@@ -1,3 +1,9 @@
+//   
+//   ConcurrentWindowing.swift
+//   DcmSwift
+// 
+//   Created by Thales on 2025/09/10.
+//  
 import Foundation
 #if canImport(Accelerate)
 import Accelerate

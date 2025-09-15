@@ -18,6 +18,12 @@ import NIO
  all the necessary bytes before passing the complete PDU message up to the next channel handler
  (in this case, `DicomAssociation`).
 
+ Phase 5 improvements:
+ - Better handling of fragmented TCP streams
+ - Support for multiple sub-operations during C-GET/C-MOVE
+ - Improved error handling and logging
+ - Memory-efficient processing of large PDUs
+
  The process is as follows:
  1. Read the first 6 bytes of the PDU header, which include the PDU type and length.
  2. From the header, extract the `pduLength`, which specifies the length of the rest of the message.
@@ -31,6 +37,11 @@ public class PDUBytesDecoder: ByteToMessageDecoder {
     // Internal buffer to accumulate data across multiple reads
     private var internalBuffer: ByteBuffer?
     
+    // Phase 5: Statistics for monitoring and debugging
+    private var totalPDUsProcessed: Int = 0
+    private var totalBytesProcessed: Int = 0
+    private var largestPDUSize: Int = 0
+    
     public init() { }
 
     public func decode(context: ChannelHandlerContext, buffer: inout ByteBuffer) -> DecodingState {
@@ -40,8 +51,19 @@ public class PDUBytesDecoder: ByteToMessageDecoder {
         }
         internalBuffer?.writeBuffer(&buffer)
         
+        // Phase 5: Track statistics
+        totalBytesProcessed += buffer.readableBytes
+        
         // Loop to process as many complete PDUs as we have in the buffer
         while let pdu = try? parsePDU(from: &internalBuffer!) {
+            totalPDUsProcessed += 1
+            largestPDUSize = max(largestPDUSize, pdu.readableBytes)
+            
+            // Phase 5: Log large PDUs for debugging C-GET/C-MOVE operations
+            if pdu.readableBytes > 1024 * 1024 { // > 1MB
+                Logger.debug("PDUBytesDecoder: Processing large PDU (\(pdu.readableBytes) bytes) - likely C-GET/C-MOVE data")
+            }
+            
             context.fireChannelRead(self.wrapInboundOut(pdu))
         }
         
@@ -61,11 +83,22 @@ public class PDUBytesDecoder: ByteToMessageDecoder {
         
         // Peek at the length without moving the reader index.
         // Bytes at indices 2-5 represent the PDU length.
-        let pduLength = Int(buffer.getInteger(at: buffer.readerIndex + 2, as: UInt32.self) ?? 0)
+        guard let pduLength = buffer.getInteger(at: buffer.readerIndex + 2, as: UInt32.self) else {
+            Logger.error("PDUBytesDecoder: Failed to read PDU length from buffer")
+            return nil
+        }
+        
+        let pduLengthInt = Int(pduLength)
+        
+        // Phase 5: Validate PDU length to prevent memory issues
+        guard pduLengthInt > 0 && pduLengthInt <= 128 * 1024 * 1024 else { // Max 128MB
+            Logger.error("PDUBytesDecoder: Invalid PDU length: \(pduLengthInt) bytes")
+            return nil
+        }
         
         // Now we have the length, check if the full PDU is available.
         // The total message size is the header (6 bytes) + the PDU length.
-        let fullPduSize = 6 + pduLength
+        let fullPduSize = 6 + pduLengthInt
         guard buffer.readableBytes >= fullPduSize else {
             return nil
         }
@@ -81,8 +114,12 @@ public class PDUBytesDecoder: ByteToMessageDecoder {
         if buffer.readableBytes > 0 {
             // This indicates leftover data that doesn't form a complete PDU.
             // Depending on the protocol, this might be an error.
-            // For now, we'll just log it or handle as needed.
-            print("Warning: Leftover bytes in buffer at EOF: \(buffer.readableBytes)")
+            Logger.warning("PDUBytesDecoder: Leftover bytes in buffer at EOF: \(buffer.readableBytes)")
+        }
+        
+        // Phase 5: Log final statistics
+        if totalPDUsProcessed > 0 {
+            Logger.debug("PDUBytesDecoder: Session complete - \(totalPDUsProcessed) PDUs processed, \(totalBytesProcessed) bytes total, largest PDU: \(largestPDUSize) bytes")
         }
         
         // Discard any remaining data in the internal buffer

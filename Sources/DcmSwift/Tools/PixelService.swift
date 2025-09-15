@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import CoreGraphics
 #if canImport(os)
 import os
 import os.signpost
@@ -66,22 +67,27 @@ public final class PixelService: @unchecked Sendable {
     private let oslog = DummyLogger()
 #endif
 
-    /// Decode the first available frame in the dataset into a display-ready buffer.
+    /// Decode a specific frame from the dataset into a display-ready buffer.
+    /// - Parameters:
+    ///   - dataset: DICOM dataset containing pixel data
+    ///   - frameIndex: Frame index to decode (0-based)
+    /// - Returns: Decoded frame with pixel data
     /// - Note: For color images this returns raw 8-bit data; consumers may convert as needed.
     @available(iOS 14.0, macOS 11.0, *)
-    public func decodeFirstFrame(from dataset: DataSet) throws -> DecodedFrame {
+    public func decodeFrame(from dataset: DataSet, frameIndex: Int) throws -> DecodedFrame {
         let debug = UserDefaults.standard.bool(forKey: "settings.debugLogsEnabled")
         let t0 = CFAbsoluteTimeGetCurrent()
 #if canImport(os)
         let perf = UserDefaults.standard.bool(forKey: "settings.perfMetricsEnabled")
+        let spid = OSSignpostID(log: spLog)
         if perf, #available(iOS 14.0, macOS 11.0, *) {
-            let spid = OSSignpostID(log: spLog)
-            os_signpost(.begin, log: spLog, name: "PixelService.decodeFirstFrame", signpostID: spid)
-            defer { os_signpost(.end, log: spLog, name: "PixelService.decodeFirstFrame", signpostID: spid) }
+            os_signpost(.begin, log: spLog, name: "PixelService.decodeFrame", signpostID: spid, 
+                       "frameIndex=%d", frameIndex)
+            defer { os_signpost(.end, log: spLog, name: "PixelService.decodeFrame", signpostID: spid) }
         }
 #endif
-        let rows = Int(dataset.integer16(forTag: "Rows") ?? 0)
-        let cols = Int(dataset.integer16(forTag: "Columns") ?? 0)
+        var rows = Int(dataset.integer16(forTag: "Rows") ?? 0)
+        var cols = Int(dataset.integer16(forTag: "Columns") ?? 0)
         guard rows > 0, cols > 0 else { throw PixelServiceError.invalidDimensions }
 
         let bitsAllocated = Int(dataset.integer16(forTag: "BitsAllocated") ?? 0)
@@ -90,7 +96,35 @@ public final class PixelService: @unchecked Sendable {
         let pi = dataset.string(forTag: "PhotometricInterpretation")
         let sop = dataset.string(forTag: "SOPInstanceUID")
 
-        guard let data = firstFramePixelData(from: dataset) else { throw PixelServiceError.missingPixelData }
+        // Check if this is a compressed Transfer Syntax and route to appropriate decoder
+        if let ts = dataset.transferSyntax, !ts.isUncompressed {
+            if debug { print("[PixelService] Compressed Transfer Syntax detected: \(ts.tsUID)") }
+            return try CompressedPixelRouter.decodeCompressedFrame(from: dataset, frameIndex: frameIndex)
+        }
+
+
+
+#if canImport(os)
+        if perf, #available(iOS 14.0, macOS 11.0, *) {
+            os_signpost(.begin, log: spLog, name: "PixelService.frameExtraction", signpostID: spid, 
+                       "transferSyntax=native")
+        }
+#endif
+        guard let data = pixelDataForFrame(from: dataset, frameIndex: frameIndex) else { 
+#if canImport(os)
+            if perf, #available(iOS 14.0, macOS 11.0, *) {
+                os_signpost(.end, log: spLog, name: "PixelService.frameExtraction", signpostID: spid)
+            }
+#endif
+            throw PixelServiceError.missingPixelData 
+        }
+#if canImport(os)
+        if perf, #available(iOS 14.0, macOS 11.0, *) {
+            os_signpost(.end, log: spLog, name: "PixelService.frameExtraction", signpostID: spid)
+            os_signpost(.begin, log: spLog, name: "PixelService.imageDecode", signpostID: spid, 
+                       "dataSize=%d bitsAllocated=%d", data.count, bitsAllocated)
+        }
+#endif
 
         if bitsAllocated > 8 {
             let pixels16 = toUInt16ArrayLE(data)
@@ -106,6 +140,11 @@ public final class PixelService: @unchecked Sendable {
                     print("[PixelService] decode16 dt=\(String(format: "%.1f", dt)) ms size=\(cols)x\(rows) bits=\(bitsAllocated)")
                 }
             }
+#if canImport(os)
+            if perf, #available(iOS 14.0, macOS 11.0, *) {
+                os_signpost(.end, log: spLog, name: "PixelService.imageDecode", signpostID: spid)
+            }
+#endif
             return out
         } else {
             let pixels8 = [UInt8](data)
@@ -121,28 +160,127 @@ public final class PixelService: @unchecked Sendable {
                     print("[PixelService] decode8 dt=\(String(format: "%.1f", dt)) ms size=\(cols)x\(rows) bits=\(bitsAllocated)")
                 }
             }
+#if canImport(os)
+            if perf, #available(iOS 14.0, macOS 11.0, *) {
+                os_signpost(.end, log: spLog, name: "PixelService.imageDecode", signpostID: spid)
+            }
+#endif
             return out
         }
+    }
+    
+    /// Decode the first available frame in the dataset into a display-ready buffer.
+    /// - Note: For color images this returns raw 8-bit data; consumers may convert as needed.
+    @available(iOS 14.0, macOS 11.0, *)
+    public func decodeFirstFrame(from dataset: DataSet) throws -> DecodedFrame {
+        return try decodeFrame(from: dataset, frameIndex: 0)
     }
 
     // MARK: - Internals (mirrors common helpers consolidated here)
 
     private func firstFramePixelData(from dataset: DataSet) -> Data? {
+        return pixelDataForFrame(from: dataset, frameIndex: 0)
+    }
+    
+    /// Extract pixel data for a specific frame index from the dataset.
+    /// Handles both encapsulated (with BOT) and non-encapsulated multiframe data.
+    /// - Parameters:
+    ///   - dataset: DICOM dataset containing pixel data
+    ///   - frameIndex: Frame index (0-based)
+    /// - Returns: Frame pixel data or nil if not available
+    public func pixelDataForFrame(from dataset: DataSet, frameIndex: Int) -> Data? {
         guard let element = dataset.element(forTagName: "PixelData") else { return nil }
-        if let seq = element as? DataSequence {
-            for item in seq.items {
-                if item.length > 128, let data = item.data { return data }
+        
+        if let px = element as? PixelSequence {
+            // Encapsulated: use BOT-based frame extraction
+            if let ts = dataset.transferSyntax, ts.isJPEG2000Part1 || ts.isRLE || ts.isJPEGBaselineOrExtended || ts.isJPEGLS || ts.isHTJ2K {
+                // Use precise frame extraction with BOT
+                if let data = try? px.frameData(at: frameIndex) { return data }
+            }
+            // Fallback: first non-empty item data for frame 0
+            if frameIndex == 0 {
+                for item in px.items { if item.length > 0, let data = item.data, data.count > 0 { return data } }
             }
             return nil
         } else {
-            if let framesString = dataset.string(forTag: "NumberOfFrames"), let frames = Int(framesString), frames > 1 {
+            // Native (uncompressed) data: handle single or multi-frame contiguous buffers
+            if let framesString = dataset.string(forTag: "NumberOfFrames"), let frames = Int(framesString), frames > 1, element.length > 0, frames > 0 {
                 let frameSize = element.length / frames
-                let chunks = element.data.toUnsigned8Array().chunked(into: frameSize)
-                if let first = chunks.first { return Data(first) }
-                return nil
+                guard frameIndex >= 0 && frameIndex < frames && frameSize > 0 else { return nil }
+                let startOffset = frameIndex * frameSize
+                let endOffset = min(startOffset + frameSize, element.data.count)
+                guard startOffset < element.data.count else { return nil }
+                return element.data.subdata(in: startOffset..<endOffset)
             } else {
-                return element.data
+                // Single frame: return all data for frame 0, nil for others
+                return frameIndex == 0 ? element.data : nil
             }
+        }
+    }
+    
+    /// Phase 4: Get frame pixel data using memory-mapped file for zero-copy access
+    /// - Parameters:
+    ///   - dicomFile: The DicomFile with memory mapping enabled
+    ///   - frameIndex: Index of the frame to retrieve (0-based)
+    /// - Returns: Frame pixel data or nil if not available
+    public func pixelDataForFrame(from dicomFile: DicomFile, frameIndex: Int) -> Data? {
+        // Use the new zero-copy method if memory mapping is enabled
+        if dicomFile.isMemoryMapped {
+            return dicomFile.frameData(at: frameIndex)
+        } else {
+            // Fallback to traditional method
+            return pixelDataForFrame(from: dicomFile.dataset, frameIndex: frameIndex)
+        }
+    }
+    
+    /// Phase 4: Decode a specific frame from raw frame data (for memory-mapped files)
+    /// - Parameters:
+    ///   - dataset: DICOM dataset containing metadata
+    ///   - frameData: Raw frame data bytes
+    ///   - frameIndex: Index of the frame (0-based)
+    /// - Returns: Decoded frame with pixel data
+    /// - Throws: PixelServiceError if decoding fails
+    public func decodeFrame(from dataset: DataSet, frameData: Data, frameIndex: Int) throws -> DecodedFrame {
+        guard let rows = dataset.integer32(forTag: "Rows"),
+              let cols = dataset.integer32(forTag: "Columns"),
+              let bitsAllocated = dataset.integer32(forTag: "BitsAllocated"),
+              let samplesPerPixel = dataset.integer32(forTag: "SamplesPerPixel") else {
+            throw PixelServiceError.invalidDataset
+        }
+        
+        let rescaleSlope = Double(dataset.string(forTag: "RescaleSlope") ?? "") ?? 1.0
+        let rescaleIntercept = Double(dataset.string(forTag: "RescaleIntercept") ?? "") ?? 0.0
+        let photometricInterpretation = dataset.string(forTag: "PhotometricInterpretation")
+        
+        // Decode based on bits allocated
+        if bitsAllocated == 8 {
+            let pixels8 = Array(frameData)
+            return DecodedFrame(
+                id: "frame_\(frameIndex)",
+                width: Int(cols),
+                height: Int(rows),
+                bitsAllocated: Int(bitsAllocated),
+                pixels8: pixels8,
+                pixels16: nil,
+                rescaleSlope: rescaleSlope,
+                rescaleIntercept: rescaleIntercept,
+                photometricInterpretation: photometricInterpretation
+            )
+        } else if bitsAllocated == 16 {
+            let pixels16 = toUInt16ArrayLE(frameData)
+            return DecodedFrame(
+                id: "frame_\(frameIndex)",
+                width: Int(cols),
+                height: Int(rows),
+                bitsAllocated: Int(bitsAllocated),
+                pixels8: nil,
+                pixels16: pixels16,
+                rescaleSlope: rescaleSlope,
+                rescaleIntercept: rescaleIntercept,
+                photometricInterpretation: photometricInterpretation
+            )
+        } else {
+            throw PixelServiceError.invalidDimensions
         }
     }
 
@@ -154,4 +292,138 @@ public final class PixelService: @unchecked Sendable {
         for i in 0..<result.count { result[i] = UInt16(littleEndian: result[i]) }
         return result
     }
+}
+
+// MARK: - CGImage extraction helpers
+
+@available(iOS 14.0, macOS 11.0, *)
+private func extractGray16Little(_ image: CGImage) -> [UInt16]? {
+    let width = image.width
+    let height = image.height
+    let count = width * height
+    var buffer = [UInt16](repeating: 0, count: count)
+    // Use linear grayscale to avoid gamma changes.
+    guard let space = CGColorSpace(name: CGColorSpace.linearGray) ?? CGColorSpaceCreateDeviceGray() as CGColorSpace? else { return nil }
+    var info = CGBitmapInfo.byteOrder16Little
+    info.insert(CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue))
+    let bytesPerRow = width * MemoryLayout<UInt16>.size
+    let ok = buffer.withUnsafeMutableBytes { raw -> Bool in
+        guard let base = raw.baseAddress else { return false }
+        guard let ctx = CGContext(data: base, width: width, height: height,
+                                  bitsPerComponent: 16, bytesPerRow: bytesPerRow,
+                                  space: space, bitmapInfo: info.rawValue) else { return false }
+        ctx.interpolationQuality = .none
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return true
+    }
+    return ok ? buffer : nil
+}
+
+@available(iOS 14.0, macOS 11.0, *)
+private func extract8(_ image: CGImage) -> [UInt8]? {
+    let width = image.width
+    let height = image.height
+    // Fast path: native 8-bit gray
+    if image.bitsPerComponent == 8, image.bitsPerPixel == 8, (image.colorSpace?.numberOfComponents ?? 1) == 1, image.alphaInfo == .none {
+        if let data = image.dataProvider?.data as Data? {
+            return [UInt8](data)
+        }
+    }
+    // General path: RGBA8888 little-endian
+    let count = width * height * 4
+    var buffer = [UInt8](repeating: 0, count: count)
+    guard let space = CGColorSpaceCreateDeviceRGB() as CGColorSpace? else { return nil }
+    var info = CGBitmapInfo.byteOrder32Little
+    info.insert(CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue))
+    let bytesPerRow = width * 4
+    let ok = buffer.withUnsafeMutableBytes { raw -> Bool in
+        guard let base = raw.baseAddress else { return false }
+        guard let ctx = CGContext(data: base, width: width, height: height,
+                                  bitsPerComponent: 8, bytesPerRow: bytesPerRow,
+                                  space: space, bitmapInfo: info.rawValue) else { return false }
+        ctx.interpolationQuality = .none
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return true
+    }
+    return ok ? buffer : nil
+}
+
+@available(iOS 14.0, macOS 11.0, *)
+private func extractRGB8(_ image: CGImage) -> [UInt8]? {
+    let width = image.width
+    let height = image.height
+    let count = width * height * 3
+    var buffer = [UInt8](repeating: 0, count: count)
+    guard let space = CGColorSpaceCreateDeviceRGB() as CGColorSpace? else { return nil }
+    // Try 24 bpp RGB (no alpha)
+    var info = CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue)
+    let bytesPerRow = width * 3
+    let ok = buffer.withUnsafeMutableBytes { raw -> Bool in
+        guard let base = raw.baseAddress else { return false }
+        guard let ctx = CGContext(data: base, width: width, height: height,
+                                  bitsPerComponent: 8, bytesPerRow: bytesPerRow,
+                                  space: space, bitmapInfo: info.rawValue) else { return false }
+        ctx.interpolationQuality = .none
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return true
+    }
+    if ok { return buffer }
+    // Fallback: draw as RGBA8888 and strip alpha
+    var rgba = [UInt8](repeating: 0, count: width * height * 4)
+    var info2 = CGBitmapInfo.byteOrder32Little
+    info2.insert(CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue))
+    let ok2 = rgba.withUnsafeMutableBytes { raw -> Bool in
+        guard let base = raw.baseAddress else { return false }
+        guard let ctx = CGContext(data: base, width: width, height: height,
+                                  bitsPerComponent: 8, bytesPerRow: width * 4,
+                                  space: space, bitmapInfo: info2.rawValue) else { return false }
+        ctx.interpolationQuality = .none
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return true
+    }
+    if !ok2 { return nil }
+    var out = [UInt8](repeating: 0, count: count)
+    var j = 0
+    var i = 0
+    while i < rgba.count {
+        // RGBA little-endian: BGRA in memory; convert to RGB
+        let b = rgba[i+0]
+        let g = rgba[i+1]
+        let r = rgba[i+2]
+        out[j] = r; out[j+1] = g; out[j+2] = b
+        j += 3; i += 4
+    }
+    return out
+}
+
+@available(iOS 14.0, macOS 11.0, *)
+private func extractGray16Raw(_ image: CGImage) -> [UInt16]? {
+    guard image.bitsPerComponent == 16,
+          image.bitsPerPixel == 16,
+          (image.colorSpace?.numberOfComponents ?? 1) == 1,
+          image.alphaInfo == .none else { return nil }
+    guard let data = image.dataProvider?.data as Data? else { return nil }
+    let width = image.width
+    let height = image.height
+    let rowBytes = image.bytesPerRow
+    if rowBytes < width * 2 { return nil }
+    var out = [UInt16](repeating: 0, count: width * height)
+    data.withUnsafeBytes { raw in
+        guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return }
+        var dstIndex = 0
+        for y in 0..<height {
+            let row = base.advanced(by: y * rowBytes)
+            var x = 0
+            while x < width {
+                // Assume big-endian in provider; convert to host little-endian
+                let msb = UInt16(row[x*2])
+                let lsb = UInt16(row[x*2 + 1])
+                let be = (msb << 8) | lsb
+                out[dstIndex] = UInt16(bigEndian: be)
+                dstIndex += 1
+                x += 1
+            }
+        }
+    }
+    return out
 }

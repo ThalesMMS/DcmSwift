@@ -31,6 +31,14 @@ public class DicomFile {
     /// A flag that informs if the file is a DICOM encapsulated PDF
     public var isEncapsulatedPDF = false
     
+    // MARK: - Phase 4: Memory Mapping and Frame Index
+    /// Optional memory-mapped file for zero-copy access
+    private var memoryMappedFile: MemoryMappedFile?
+    /// Frame index for efficient frame access
+    private var frameIndex: FrameIndex?
+    /// Whether memory mapping is enabled for this file
+    public private(set) var isMemoryMapped: Bool = false
+    
     
     // MARK: - Public methods
     /**
@@ -53,6 +61,33 @@ public class DicomFile {
         Create a void dicomFile
      */
     internal init() { }
+    
+    /**
+     Initialize a DICOM file with memory mapping enabled
+     
+     - Parameter filepath: the path of the DICOM file to load
+     - Parameter enableMemoryMapping: whether to enable memory mapping for zero-copy access
+     */
+    public init?(forPath filepath: String, enableMemoryMapping: Bool = false) {
+        if !FileManager.default.fileExists(atPath: filepath) {
+            Logger.error("No such file at \(filepath)")
+            return nil
+        }
+        
+        self.filepath = filepath
+        
+        if !self.read() { return nil }
+        
+        // Initialize memory mapping and frame index if requested
+        if enableMemoryMapping {
+            do {
+                try self.enableMemoryMapping()
+            } catch {
+                Logger.warning("Failed to enable memory mapping: \(error.localizedDescription)")
+                // Continue without memory mapping
+            }
+        }
+    }
     
     /**
     Get the formatted size of the current file path
@@ -263,5 +298,116 @@ public class DicomFile {
                 
         inputStream.close()
         return false
+    }
+    
+    // MARK: - Phase 4: Memory Mapping and Frame Index Methods
+    
+    /**
+     Enable memory mapping for zero-copy frame access
+     
+     - Throws: MemoryMappingError or FrameIndexError if initialization fails
+     */
+    public func enableMemoryMapping() throws {
+        guard !isMemoryMapped else {
+            return // Already enabled
+        }
+        
+        // Create memory-mapped file
+        memoryMappedFile = try MemoryMappedFile(filePath: filepath)
+        
+        // Build frame index
+        frameIndex = try FrameIndex(dataset: dataset)
+        
+        isMemoryMapped = true
+        Logger.debug("Memory mapping enabled for \(fileName()) with \(frameIndex?.count ?? 0) frames")
+    }
+    
+    /**
+     Disable memory mapping and cleanup resources
+     */
+    public func disableMemoryMapping() {
+        memoryMappedFile?.cleanup()
+        memoryMappedFile = nil
+        frameIndex = nil
+        isMemoryMapped = false
+    }
+    
+    /**
+     Get the number of frames in this DICOM file
+     
+     - Returns: Number of frames, or nil if frame index is not available
+     */
+    public func frameCount() -> Int? {
+        return frameIndex?.count
+    }
+    
+    /**
+     Get frame data using zero-copy access (if memory mapping is enabled)
+     
+     - Parameter frameIndex: Index of the frame to retrieve (0-based)
+     - Returns: Data containing the frame, or nil if not available
+     */
+    public func frameData(at frameIndex: Int) -> Data? {
+        guard isMemoryMapped,
+              let memoryMappedFile = memoryMappedFile,
+              let frameInfo = self.frameIndex?.frameInfo(at: frameIndex) else {
+            // Fallback to traditional method
+            return traditionalFrameData(at: frameIndex)
+        }
+        
+        // Use zero-copy access
+        return memoryMappedFile.data(offset: frameInfo.offset, length: frameInfo.length)
+    }
+    
+    /**
+     Get frame data using traditional method (fallback)
+     
+     - Parameter frameIndex: Index of the frame to retrieve (0-based)
+     - Returns: Data containing the frame, or nil if not available
+     */
+    private func traditionalFrameData(at frameIndex: Int) -> Data? {
+        guard let pixelDataElement = dataset.element(forTagName: "PixelData") else {
+            return nil
+        }
+        
+        if let pixelSequence = pixelDataElement as? PixelSequence {
+            // Encapsulated frames
+            return try? pixelSequence.frameData(at: frameIndex)
+        } else {
+            // Native frames
+            guard let numberOfFramesString = dataset.string(forTag: "NumberOfFrames"),
+                  let numberOfFrames = Int(numberOfFramesString), numberOfFrames > 1 else {
+                // Single frame
+                return frameIndex == 0 ? pixelDataElement.data : nil
+            }
+            
+            guard frameIndex >= 0 && frameIndex < numberOfFrames else {
+                return nil
+            }
+            
+            let frameSize = pixelDataElement.length / numberOfFrames
+            let startOffset = frameIndex * frameSize
+            let endOffset = min(startOffset + frameSize, pixelDataElement.data.count)
+            
+            guard startOffset < pixelDataElement.data.count else {
+                return nil
+            }
+            
+            return pixelDataElement.data.subdata(in: startOffset..<endOffset)
+        }
+    }
+    
+    /**
+     Get frame information for a specific frame
+     
+     - Parameter frameIndex: Index of the frame (0-based)
+     - Returns: FrameInfo containing offset and length, or nil if not available
+     */
+    public func frameInfo(at frameIndex: Int) -> FrameInfo? {
+        return self.frameIndex?.frameInfo(at: frameIndex)
+    }
+    
+    deinit {
+        disableMemoryMapping()
     }
 }
