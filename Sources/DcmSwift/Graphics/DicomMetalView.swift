@@ -10,6 +10,7 @@ import UIKit
 import MetalKit
 import Metal
 import os.signpost
+import Foundation
 
 /// GPU-first DICOM pixel view using Metal for direct rendering
 /// Eliminates the GPU⇄CPU round-trip by keeping pixels on GPU and applying WL in shader
@@ -18,7 +19,11 @@ public final class DicomMetalView: MTKView {
     
     // MARK: - Metal Resources
     
-    private var device: MTLDevice
+    private var _device: MTLDevice?
+    override public var device: MTLDevice? {
+        get { return _device }
+        set { _device = newValue }
+    }
     private var commandQueue: MTLCommandQueue
     private var renderPipelineState: MTLRenderPipelineState?
     private var computePipelineState: MTLComputePipelineState?
@@ -45,7 +50,6 @@ public final class DicomMetalView: MTKView {
     private var inverted: Bool = false
     
     // Performance monitoring
-    private let performanceMonitor = RenderingPerformanceMonitor.shared
     private var enablePerfMetrics: Bool {
         UserDefaults.standard.bool(forKey: "settings.perfMetricsEnabled")
     }
@@ -53,10 +57,14 @@ public final class DicomMetalView: MTKView {
     // MARK: - Initialization
     
     public init(device: MTLDevice? = nil) {
-        self.device = device ?? MTLCreateSystemDefaultDevice()!
-        self.commandQueue = self.device.makeCommandQueue()!
+        let metalDevice = device ?? MTLCreateSystemDefaultDevice()
+        self._device = metalDevice
+        guard let queue = metalDevice?.makeCommandQueue() else {
+            fatalError("Failed to create Metal command queue")
+        }
+        self.commandQueue = queue
         
-        super.init(frame: .zero, device: self.device)
+        super.init(frame: .zero, device: metalDevice)
         
         setupMetalView()
         setupRenderPipeline()
@@ -84,7 +92,7 @@ public final class DicomMetalView: MTKView {
     }
     
     private func setupRenderPipeline() {
-        guard let library = device.makeDefaultLibrary() else {
+        guard let device = device, let library = device.makeDefaultLibrary() else {
             print("❌ Failed to create Metal library")
             return
         }
@@ -119,6 +127,8 @@ public final class DicomMetalView: MTKView {
     }
     
     private func setupBuffers() {
+        guard let device = device else { return }
+        
         // Create WL parameters buffer
         wlParamsBuffer = device.makeBuffer(length: MemoryLayout<WLParams>.stride, options: .storageModeShared)
         
@@ -145,8 +155,11 @@ public final class DicomMetalView: MTKView {
     
     /// Upload 16-bit grayscale pixels to GPU texture
     public func upload16(_ pixels: UnsafeRawPointer, width: Int, height: Int, pixelFormat: MTLPixelFormat = .r16Uint) {
-        let token = performanceMonitor.startGPUOperation(.textureUpload)
-        defer { performanceMonitor.endGPUOperation(token) }
+        guard let device = device else { return }
+        
+        // Performance monitoring disabled for now
+        // let token = performanceMonitor.startGPUOperation(GPUOperation.textureUpload)
+        // defer { performanceMonitor.endGPUOperation(token) }
         
         imageWidth = width
         imageHeight = height
@@ -186,15 +199,18 @@ public final class DicomMetalView: MTKView {
     
     /// Upload 8-bit RGB pixels to GPU texture
     public func upload8x3(_ pixels: UnsafeRawPointer, width: Int, height: Int, bgr: Bool = false) {
-        let token = performanceMonitor.startGPUOperation(.textureUpload)
-        defer { performanceMonitor.endGPUOperation(token) }
+        guard let device = device else { return }
+        
+        // Performance monitoring disabled for now
+        // let token = performanceMonitor.startGPUOperation(GPUOperation.textureUpload)
+        // defer { performanceMonitor.endGPUOperation(token) }
         
         imageWidth = width
         imageHeight = height
         samplesPerPixel = 3
         
         let textureDescriptor = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .rgb8Unorm,
+            pixelFormat: .bgra8Unorm,
             width: width,
             height: height,
             mipmapped: false
@@ -249,7 +265,8 @@ public final class DicomMetalView: MTKView {
             imageHeight: Float(imageHeight)
         )
         
-        memcpy(buffer.contents(), &params, MemoryLayout<WLParams>.stride)
+        var paramsCopy = params
+        memcpy(buffer.contents(), &paramsCopy, MemoryLayout<WLParams>.stride)
     }
     
     private func renderFrame() {
@@ -262,8 +279,9 @@ public final class DicomMetalView: MTKView {
             return
         }
         
-        let token = performanceMonitor.startGPUOperation(.renderPass)
-        defer { performanceMonitor.endGPUOperation(token) }
+        // Performance monitoring disabled for now
+        // let token = performanceMonitor.startGPUOperation(GPUOperation.renderPass)
+        // defer { performanceMonitor.endGPUOperation(token) }
         
         guard let commandBuffer = commandQueue.makeCommandBuffer(),
               let renderEncoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor) else {

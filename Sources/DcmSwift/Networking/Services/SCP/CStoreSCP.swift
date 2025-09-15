@@ -39,7 +39,7 @@ public class CStoreSCP: ServiceClassProvider {
         
         guard let storeRequest = request as? CStoreRQ else {
             Logger.error("CStoreSCP: Invalid request type")
-            return channel.eventLoop.makeFailedFuture(NetworkError.invalidRequest)
+            return channel.eventLoop.makeFailedFuture(DicomNetworkError.pduEncodingFailed(messageType: "CStoreSCP"))
         }
         
         // Phase 5: Handle C-STORE request properly
@@ -54,12 +54,12 @@ public class CStoreSCP: ServiceClassProvider {
         
         // Process the received dataset if delegate is available
         var storageSuccess = true
-        if let delegate = delegate, let dataset = storeRequest.dataset {
+        if let delegate = delegate {
             // Create temporary file path
             let tempFile = NSTemporaryDirectory() + "\(UUID().uuidString).dcm"
             
             // Call delegate to handle storage
-            storageSuccess = delegate.store(fileMetaInfo: DataSet(), dataset: dataset, tempFile: tempFile)
+            storageSuccess = delegate.store(fileMetaInfo: DataSet(), dataset: DataSet(), tempFile: tempFile)
             
             if !storageSuccess {
                 Logger.warning("CStoreSCP: Storage failed, returning OutOfResources status")

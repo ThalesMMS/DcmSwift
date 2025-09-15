@@ -276,11 +276,8 @@ public final class DicomPixelView: UIView {
 #endif
         
         // Enhanced performance monitoring for rendering operations
-        let renderToken = RenderingPerformanceMonitor.shared.startFrameRender(seriesID: "local", frameIndex: 0)
-        defer { 
-            let duration = enablePerfMetrics ? (CFAbsoluteTimeGetCurrent() - t0) * 1000 : 0
-            RenderingPerformanceMonitor.shared.endFrameRender(renderToken, success: true)
-        }
+        // Note: Frame rendering performance monitoring removed for now
+        // as DcmSwiftPerformanceMonitor doesn't have frame-specific methods
         if debugLogsEnabled {
             print("[DicomPixelView] recomputeImage start size=\(imgWidth)x\(imgHeight) spp=\(samplesPerPixel) cacheValid=\(cachedImageDataValid)")
         }
@@ -331,9 +328,9 @@ public final class DicomPixelView: UIView {
             // Adopting the logic from the 'codex' branch for 16-bit processing.
             if let extLUT = lut16 {
                 // Try GPU first
-                let gpuToken = RenderingPerformanceMonitor.shared.startGPUOperation(.windowLevelCompute)
+                let gpuToken = DcmSwiftPerformanceMonitor.shared.startGPUOperation(GPUOperation.windowLevelCompute)
                 let gpuSuccess = applyLUTTo16GPU(src16, lut: extLUT, into: &cachedImageData!, components: srcSamplesPerPixel)
-                RenderingPerformanceMonitor.shared.endGPUOperation(gpuToken, success: gpuSuccess)
+                DcmSwiftPerformanceMonitor.shared.endGPUOperation(gpuToken, success: gpuSuccess)
                 
                 if gpuSuccess {
                     if debugLogsEnabled { print("[DicomPixelView] path=16-bit external LUT GPU") }
@@ -347,9 +344,9 @@ public final class DicomPixelView: UIView {
                     }
                 }
             } else {
-                let gpuToken = RenderingPerformanceMonitor.shared.startGPUOperation(.windowLevelCompute)
+                let gpuToken = DcmSwiftPerformanceMonitor.shared.startGPUOperation(GPUOperation.windowLevelCompute)
                 let gpuSuccess = applyWindowTo16GPU(src16, srcSamples: srcSamplesPerPixel, into: &cachedImageData!)
-                RenderingPerformanceMonitor.shared.endGPUOperation(gpuToken, success: gpuSuccess)
+                DcmSwiftPerformanceMonitor.shared.endGPUOperation(gpuToken, success: gpuSuccess)
                 
                 if gpuSuccess {
                     if debugLogsEnabled { print("[DicomPixelView] path=16-bit GPU WL") }
