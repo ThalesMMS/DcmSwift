@@ -154,7 +154,46 @@ final class FrameIndexTests: XCTestCase {
         XCTAssertEqual(frameInfo1?.length, 1000) // 2000 - 1000
         XCTAssertTrue(frameInfo1?.isEncapsulated ?? false)
     }
-    
+
+    func testFrameIndexEncapsulatedWithInvalidBOTOffsets() {
+        let dataset = DataSet()
+
+        dataset.add(element: DataElement(withTag: DataTag(withGroup: "0028", element: "0010"), dataset: dataset))
+        dataset.add(element: DataElement(withTag: DataTag(withGroup: "0028", element: "0011"), dataset: dataset))
+        dataset.add(element: DataElement(withTag: DataTag(withGroup: "0028", element: "0002"), dataset: dataset))
+        dataset.add(element: DataElement(withTag: DataTag(withGroup: "0028", element: "0100"), dataset: dataset))
+
+        _ = dataset.element(forTagName: "Rows")?.setValue(Int32(64))
+        _ = dataset.element(forTagName: "Columns")?.setValue(Int32(64))
+        _ = dataset.element(forTagName: "SamplesPerPixel")?.setValue(Int32(1))
+        _ = dataset.element(forTagName: "BitsAllocated")?.setValue(Int32(8))
+
+        let pixelSequence = PixelSequence(withTag: DataTag(withGroup: "7FE0", element: "0010"))
+        pixelSequence.dataOffset = 5000
+
+        let botItem = DataItem(withTag: DataTag(withGroup: "FFFE", element: "E000"))
+        // Offsets are not strictly increasing (100 followed by 80) and should trigger a validation error
+        var botData = Data()
+        botData.append(contentsOf: [100, 0, 0, 0])
+        botData.append(contentsOf: [80, 0, 0, 0])
+        botItem.data = botData
+        pixelSequence.items.append(botItem)
+
+        for _ in 0..<2 {
+            let fragmentItem = DataItem(withTag: DataTag(withGroup: "FFFE", element: "E000"))
+            fragmentItem.data = Data(count: 200)
+            pixelSequence.items.append(fragmentItem)
+        }
+
+        dataset.add(element: pixelSequence)
+
+        XCTAssertThrowsError(try FrameIndex(dataset: dataset)) { error in
+            guard case FrameIndexError.invalidBOTOffsets = error else {
+                return XCTFail("Expected invalidBOTOffsets error")
+            }
+        }
+    }
+
     func testFrameIndexEncapsulatedWithoutBOT() throws {
         // Create a mock dataset for encapsulated frames without BOT
         let dataset = DataSet()
@@ -223,6 +262,31 @@ final class FrameIndexTests: XCTestCase {
                 // Expected error
             } else {
                 XCTFail("Expected missingRequiredTags error")
+            }
+        }
+    }
+
+    func testFrameIndexFrameTooLarge() {
+        let dataset = DataSet()
+
+        dataset.add(element: DataElement(withTag: DataTag(withGroup: "0028", element: "0010"), dataset: dataset))
+        dataset.add(element: DataElement(withTag: DataTag(withGroup: "0028", element: "0011"), dataset: dataset))
+        dataset.add(element: DataElement(withTag: DataTag(withGroup: "0028", element: "0002"), dataset: dataset))
+        dataset.add(element: DataElement(withTag: DataTag(withGroup: "0028", element: "0100"), dataset: dataset))
+
+        _ = dataset.element(forTagName: "Rows")?.setValue(Int32(8192))
+        _ = dataset.element(forTagName: "Columns")?.setValue(Int32(8192))
+        _ = dataset.element(forTagName: "SamplesPerPixel")?.setValue(Int32(3))
+        _ = dataset.element(forTagName: "BitsAllocated")?.setValue(Int32(24))
+
+        let pixelDataElement = DataElement(withTag: DataTag(withGroup: "7FE0", element: "0010"), dataset: dataset)
+        pixelDataElement.dataOffset = 1234
+        pixelDataElement.length = 603_979_776 // 8192 * 8192 * 3 samples * 3 bytes per sample
+        dataset.add(element: pixelDataElement)
+
+        XCTAssertThrowsError(try FrameIndex(dataset: dataset)) { error in
+            guard case FrameIndexError.frameTooLarge = error else {
+                return XCTFail("Expected frameTooLarge error")
             }
         }
     }
