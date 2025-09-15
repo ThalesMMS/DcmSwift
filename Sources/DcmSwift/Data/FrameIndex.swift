@@ -91,43 +91,34 @@ private extension FrameIndex {
     static func buildEncapsulatedFrameIndex(pixelSequence: PixelSequence, baseOffset: Int) throws -> [FrameInfo] {
         var frameInfos: [FrameInfo] = []
         
-        // Get BOT (Basic Offset Table) from first item
-        let bot = pixelSequence.basicOffsetTable()
-        
-        if let bot = bot, bot.count > 0 {
-            // Parse BOT offsets
-            let frameCount = bot.count / 4 // Each offset is 4 bytes
-            var offsets: [Int] = []
-            
-            bot.withUnsafeBytes { rawBytes in
-                let uint32Pointer = rawBytes.bindMemory(to: UInt32.self)
-                for i in 0..<frameCount {
-                    let offset = Int(UInt32(littleEndian: uint32Pointer[i]))
-                    offsets.append(offset)
-                }
+        let fragments = pixelSequence.items.dropFirst() // Skip BOT item
+        let totalFragmentLength = fragments.reduce(0) { $0 + ($1.data?.count ?? 0) }
+
+        // Get BOT (Basic Offset Table) offsets from first item
+        if let offsets = pixelSequence.basicOffsetTable(), !offsets.isEmpty {
+            guard totalFragmentLength > 0 else {
+                throw FrameIndexError.noFramesFound
             }
-            
-            // Calculate frame lengths and build frame info
-            for i in 0..<frameCount {
-                let startOffset = offsets[i]
-                let endOffset = (i + 1 < offsets.count) ? offsets[i + 1] : bot.count
-                let length = endOffset - startOffset
-                
+
+            for (index, startOffset) in offsets.enumerated() {
+                let nextOffset = (index + 1 < offsets.count) ? offsets[index + 1] : totalFragmentLength
+                let clampedNextOffset = min(max(nextOffset, startOffset), totalFragmentLength)
+                let length = clampedNextOffset - startOffset
+
+                guard length > 0 else { continue }
+
                 // Add base offset to get absolute file position
                 let absoluteOffset = baseOffset + startOffset
-                
-                frameInfos.append(FrameInfo(offset: absoluteOffset, 
-                                          length: length, 
+
+                frameInfos.append(FrameInfo(offset: absoluteOffset,
+                                          length: length,
                                           isEncapsulated: true))
             }
         } else {
             // No BOT - treat as single frame (fallback)
-            let fragments = pixelSequence.items.dropFirst() // Skip BOT item
-            let totalLength = fragments.reduce(0) { $0 + ($1.data?.count ?? 0) }
-            
-            if totalLength > 0 {
-                frameInfos.append(FrameInfo(offset: baseOffset, 
-                                          length: totalLength, 
+            if totalFragmentLength > 0 {
+                frameInfos.append(FrameInfo(offset: baseOffset,
+                                          length: totalFragmentLength,
                                           isEncapsulated: true))
             }
         }
