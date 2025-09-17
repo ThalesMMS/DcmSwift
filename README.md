@@ -87,7 +87,7 @@ swift build --product DcmPrint
 - Transfer syntaxes (recognition and/or decoding)
   - ✅ Uncompressed: Implicit VR Little Endian; Explicit VR Little/Big Endian
   - ✅ JPEG (baseline) and JPEG 2000 via platform codecs where available
-  - JPEG-LS (lossless/near-lossless): Experimental NEAR=0 grayscale decoder (enable with `DCMSWIFT_ENABLE_JPEGLS=1`).
+  - JPEG-LS (lossless/near-lossless): Experimental NEAR=0 grayscale decoder (enabled by default; set `DCMSWIFT_DISABLE_JPEGLS=1` to opt out).
   - RLE Lossless: Implemented for Mono8, Mono16, RGB8.
   - ⚠️ Not yet: Deflate (custom codec required)
 

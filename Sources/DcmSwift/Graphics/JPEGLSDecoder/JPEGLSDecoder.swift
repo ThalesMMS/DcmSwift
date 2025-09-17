@@ -4,8 +4,7 @@
 //
 //  Created by Thales on 2025/09/10.
 // 
-//  JPEG-LS scaffolding behind a feature flag. Full implementation is non-trivial.
-//  Enable with environment variable: DCMSWIFT_ENABLE_JPEGLS=1
+//  JPEG-LS decoder (enabled by default). Disable with DCMSWIFT_DISABLE_JPEGLS=1 when needed.
 //
 
 import Foundation
@@ -25,7 +24,7 @@ public struct JPEGLSResult {
 
 public enum JPEGLSDecoder {
     static var isEnabled: Bool {
-        ProcessInfo.processInfo.environment["DCMSWIFT_ENABLE_JPEGLS"] == "1"
+        ProcessInfo.processInfo.environment["DCMSWIFT_DISABLE_JPEGLS"] != "1"
     }
 
     /// Placeholder entry point. Returns `.disabled` unless feature flag is set.

@@ -95,26 +95,39 @@ private extension CompressedPixelRouter {
         let cols = Int(dataset.integer16(forTag: "Columns") ?? 0)
         let slope = Double(dataset.string(forTag: "RescaleSlope") ?? "") ?? 1.0
         let intercept = Double(dataset.string(forTag: "RescaleIntercept") ?? "") ?? 0.0
+        let bitsAllocatedTag = Int(dataset.integer16(forTag: "BitsAllocated") ?? 0)
         let pi = dataset.string(forTag: "PhotometricInterpretation")
         let sop = dataset.string(forTag: "SOPInstanceUID")
         
-        // Prefer native 16-bit decoder when requested
-        #if DCMSWIFT_ENABLE_NATIVE_J2K
-        if UserDefaults.standard.bool(forKey: "settings.decoderPrefer16Bit"),
-           let native = J2KNativeDecoder.decodeU16(codestream) {
-            let mono1 = (pi?.trimmingCharacters(in: .whitespaces).uppercased() == "MONOCHROME1")
-            let p16Out: [UInt16] = mono1 ? native.pixels.map { 0xFFFF &- $0 } : native.pixels
-            let out = DecodedFrame(id: sop, width: native.width, height: native.height, bitsAllocated: 16,
-                                   pixels8: nil, pixels16: p16Out,
-                                   rescaleSlope: slope, rescaleIntercept: intercept,
-                                   photometricInterpretation: mono1 ? "MONOCHROME2" : pi)
-            if debug {
-                let dt = (CFAbsoluteTimeGetCurrent() - t0) * 1000
-                print("[CompressedPixelRouter] J2K native 16-bit decode dt=\(String(format: "%.1f", dt)) ms size=\(native.width)x\(native.height)")
+        // Prefer native decoder (OpenJPH) when requested for high bit-depth streams.
+        let preferNativeDecode = (UserDefaults.standard.object(forKey: "settings.decoderPrefer16Bit") as? Bool) ?? true
+        if preferNativeDecode,
+           let native = J2KNativeDecoder.decode(codestream) {
+            if native.components == 1, let p16 = native.pixels16, native.bitsPerSample > 8 {
+                let mono1 = (pi?.trimmingCharacters(in: .whitespaces).uppercased() == "MONOCHROME1")
+                let p16Out: [UInt16] = mono1 ? p16.map { 0xFFFF &- $0 } : p16
+                let bits = bitsAllocatedTag > 0 ? bitsAllocatedTag : native.bitsPerSample
+                let out = DecodedFrame(id: sop, width: native.width, height: native.height, bitsAllocated: bits,
+                                       pixels8: nil, pixels16: p16Out,
+                                       rescaleSlope: slope, rescaleIntercept: intercept,
+                                       photometricInterpretation: mono1 ? "MONOCHROME2" : pi)
+                if debug {
+                    let dt = (CFAbsoluteTimeGetCurrent() - t0) * 1000
+                    print("[CompressedPixelRouter] J2K native decode dt=\(String(format: "%.1f", dt)) ms size=\(native.width)x\(native.height)")
+                }
+                return out
+            } else if native.components == 3, let rgb = native.pixels8 {
+                let out = DecodedFrame(id: sop, width: native.width, height: native.height, bitsAllocated: 8,
+                                       pixels8: rgb, pixels16: nil,
+                                       rescaleSlope: 1.0, rescaleIntercept: 0.0,
+                                       photometricInterpretation: "RGB")
+                if debug {
+                    let dt = (CFAbsoluteTimeGetCurrent() - t0) * 1000
+                    print("[CompressedPixelRouter] J2K native RGB decode dt=\(String(format: "%.1f", dt)) ms size=\(native.width)x\(native.height)")
+                }
+                return out
             }
-            return out
         }
-        #endif
         
         // Use ImageIO decoder
         let j2k = try JPEG2000Decoder.decodeCodestream(codestream)
@@ -167,8 +180,68 @@ private extension CompressedPixelRouter {
     
     /// Decode HTJ2K (High-Throughput JPEG 2000) - currently unsupported
     static func decodeHTJ2K(dataset: DataSet, frameIndex: Int, debug: Bool, t0: CFAbsoluteTime) throws -> DecodedFrame {
+        guard let element = dataset.element(forTagName: "PixelData") as? PixelSequence else {
+            throw PixelServiceError.missingPixelData
+        }
+        guard let codestream = try? element.frameData(at: frameIndex) else {
+            throw PixelServiceError.missingPixelData
+        }
+
+        let slope = Double(dataset.string(forTag: "RescaleSlope") ?? "") ?? 1.0
+        let intercept = Double(dataset.string(forTag: "RescaleIntercept") ?? "") ?? 0.0
+        let bitsAllocatedTag = Int(dataset.integer16(forTag: "BitsAllocated") ?? 0)
+        let pi = dataset.string(forTag: "PhotometricInterpretation")
+        let sop = dataset.string(forTag: "SOPInstanceUID")
+        let preferNativeDecode = (UserDefaults.standard.object(forKey: "settings.decoderPrefer16Bit") as? Bool) ?? true
+
+        guard preferNativeDecode, let native = J2KNativeDecoder.decode(codestream) else {
+            if debug { print("[CompressedPixelRouter] HTJ2K native decoder unavailable") }
+            throw PixelServiceError.missingPixelData
+        }
+
+        if native.components == 1, let pixels16 = native.pixels16 {
+            let mono1 = (pi?.trimmingCharacters(in: .whitespaces).uppercased() == "MONOCHROME1")
+            let p16Out: [UInt16] = mono1 ? pixels16.map { 0xFFFF &- $0 } : pixels16
+            let bits = bitsAllocatedTag > 0 ? bitsAllocatedTag : max(16, native.bitsPerSample)
+            let out = DecodedFrame(id: sop, width: native.width, height: native.height, bitsAllocated: bits,
+                                   pixels8: nil, pixels16: p16Out,
+                                   rescaleSlope: slope, rescaleIntercept: intercept,
+                                   photometricInterpretation: mono1 ? "MONOCHROME2" : pi)
+            if debug {
+                let dt = (CFAbsoluteTimeGetCurrent() - t0) * 1000
+                print("[CompressedPixelRouter] HTJ2K native decode dt=\(String(format: "%.1f", dt)) ms size=\(native.width)x\(native.height)")
+            }
+            return out
+        }
+
+        if native.components == 1, let pixels8 = native.pixels8 {
+            let mono1 = (pi?.trimmingCharacters(in: .whitespaces).uppercased() == "MONOCHROME1")
+            let p8Out: [UInt8] = mono1 ? pixels8.map { 255 &- $0 } : pixels8
+            let out = DecodedFrame(id: sop, width: native.width, height: native.height, bitsAllocated: 8,
+                                   pixels8: p8Out, pixels16: nil,
+                                   rescaleSlope: slope, rescaleIntercept: intercept,
+                                   photometricInterpretation: mono1 ? "MONOCHROME2" : pi)
+            if debug {
+                let dt = (CFAbsoluteTimeGetCurrent() - t0) * 1000
+                print("[CompressedPixelRouter] HTJ2K native 8-bit decode dt=\(String(format: "%.1f", dt)) ms size=\(native.width)x\(native.height)")
+            }
+            return out
+        }
+
+        if native.components == 3, let rgb = native.pixels8 {
+            let out = DecodedFrame(id: sop, width: native.width, height: native.height, bitsAllocated: 8,
+                                   pixels8: rgb, pixels16: nil,
+                                   rescaleSlope: 1.0, rescaleIntercept: 0.0,
+                                   photometricInterpretation: "RGB")
+            if debug {
+                let dt = (CFAbsoluteTimeGetCurrent() - t0) * 1000
+                print("[CompressedPixelRouter] HTJ2K native RGB decode dt=\(String(format: "%.1f", dt)) ms size=\(native.width)x\(native.height)")
+            }
+            return out
+        }
+
         if debug {
-            print("[CompressedPixelRouter] HTJ2K not supported - falling back to error")
+            print("[CompressedPixelRouter] HTJ2K native decoder returned unsupported format")
         }
         throw PixelServiceError.missingPixelData
     }

@@ -42,7 +42,8 @@ let package = Package(
                 "Socket", 
                 .product(name: "NIO", package: "swift-nio"), 
                 .product(name: "NIOSSL", package: "swift-nio-ssl"),
-                .product(name: "Html", package: "swift-html") 
+                .product(name: "Html", package: "swift-html"),
+                "OpenJPH"
             ],
             resources: [
                 // Resources are specified relative to the target directory
@@ -50,60 +51,78 @@ let package = Package(
             ]
         ),
         .target(
+            name: "OpenJPH",
+            dependencies: [],
+            path: "Sources/OpenJPH",
+            publicHeadersPath: "include",
+            cxxSettings: [
+                .headerSearchPath("core"),
+                .headerSearchPath("core/common"),
+                .headerSearchPath("core/others"),
+                .headerSearchPath("core/codestream"),
+                .headerSearchPath("core/coding"),
+                .headerSearchPath("core/transform"),
+                .define("OJPH_DISABLE_TIFF_SUPPORT", to: "1"),
+                .define("OJPH_DISABLE_TIFF", to: "1"),
+                .define("OJPH_DISABLE_WASM_SIMD", to: "1"),
+                .unsafeFlags(["-std=c++17"], .when(platforms: [.macOS, .iOS]))
+            ]
+        ),
+        .executableTarget(
             name: "DcmAnonymize",
             dependencies: [
                 "DcmSwift",
                 .product(name: "ArgumentParser", package: "swift-argument-parser")
             ]),
-        .target(
+        .executableTarget(
             name: "DcmPrint",
             dependencies: [
                 "DcmSwift",
                 .product(name: "ArgumentParser", package: "swift-argument-parser")
             ]),
-        .target(
+        .executableTarget(
             name: "DcmSR",
             dependencies: [
                 "DcmSwift",
                 .product(name: "ArgumentParser", package: "swift-argument-parser")
             ]),
-        .target(
+        .executableTarget(
             name: "DcmServer",
             dependencies: [
                 "DcmSwift",
                 .product(name: "ArgumentParser", package: "swift-argument-parser")
             ]),
-        .target(
+        .executableTarget(
             name: "DcmEcho",
             dependencies: [
                 "DcmSwift",
                 .product(name: "ArgumentParser", package: "swift-argument-parser")
             ]),
-        .target(
+        .executableTarget(
             name: "DcmStore",
             dependencies: [
                 "DcmSwift",
                 .product(name: "ArgumentParser", package: "swift-argument-parser")
             ]),
-        .target(
+        .executableTarget(
             name: "DcmFind",
             dependencies: [
                 "DcmSwift",
                 .product(name: "ArgumentParser", package: "swift-argument-parser")
             ]),
-        .target(
+        .executableTarget(
             name: "DcmGet",
             dependencies: [
                 "DcmSwift",
                 .product(name: "ArgumentParser", package: "swift-argument-parser")
             ]),
-        .target(
+        .executableTarget(
             name: "DcmMove",
             dependencies: [
                 "DcmSwift",
                 .product(name: "ArgumentParser", package: "swift-argument-parser")
             ]),
-        .target(
+        .executableTarget(
             name: "DcmDecompress",
             dependencies: [
                 "DcmSwift"
@@ -112,10 +131,7 @@ let package = Package(
             name: "DcmSwiftTests",
             dependencies: ["DcmSwift"],
             resources: [
-                .process("Resources/DICOM"),
-                .process("Resources/DICOMDIR"),
-                .process("Resources/SR"),
-                .process("Resources/RT"),
+                .process("../DICOM_Test")
             ]
         )
     ]
