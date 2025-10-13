@@ -1,14 +1,14 @@
-# DcmSwift - High-Performance DICOM Library for Swift
+# DcmSwift
 
-DcmSwift is a comprehensive DICOM implementation in Swift featuring GPU-accelerated image processing, complete networking support (DIMSE and DICOMweb), and production-ready performance optimizations. The library provides full DICOM file format support, advanced image rendering with real-time window/level adjustments, and robust PACS integration capabilities.
+DcmSwift is a Swift package that implements the DICOM standard with an emphasis on predictable performance and practical tooling. It combines GPU accelerated image processing, complete DIMSE and DICOMweb networking stacks, and utilities for integrating with PACS systems.
 
-## ✨ Highlights
+## Highlights
 
-- **🚀 GPU Acceleration**: Metal compute shaders for real-time image processing
-- **⚡ Optimized Performance**: vDSP vectorization, streaming decode, persistent buffers
-- **🔗 Complete Networking**: All DIMSE services plus async DICOMweb
-- **📊 Production Ready**: Powers iOS/macOS medical imaging applications
-- **🛠 Developer Friendly**: Comprehensive CLI tools and modern Swift APIs 
+- GPU-accelerated window and level operations through Metal compute shaders, with a CPU path fallback.
+- Vectorised CPU pipelines using vDSP for LUT generation and pixel mapping.
+- Complete DIMSE services (C-ECHO, C-FIND, C-STORE, C-GET, C-MOVE) and DICOMweb clients (WADO-RS, QIDO-RS, STOW-RS).
+- Command-line tools for inspecting, anonymising, retrieving, and serving DICOM data.
+- Production-oriented design with streaming decode, persistent buffers, and configurable caching.
 
 ## Key Features
 
@@ -40,7 +40,7 @@ DcmSwift is a comprehensive DICOM implementation in Swift featuring GPU-accelera
 - **vDSP Vectorization**: SIMD-accelerated LUT generation and pixel mapping
 - **Streaming Pixel Data**: Progressive loading from `DicomInputStream`
 - **Persistent Buffers**: `DicomPixelView` maintains raw pixels across W/L changes
-- **Fast 16→8 Mapping**: Vectorized conversion for display
+- **Fast 16->8 Mapping**: Vectorized conversion for display
 
 #### Concurrency & Memory
 - **Concurrency**: Async/await in DICOMweb and utilities; DIMSE uses NIO with sync wrappers
@@ -85,20 +85,20 @@ swift build --product DcmPrint
 ### Supported Features
 
 - Transfer syntaxes (recognition and/or decoding)
-  - ✅ Uncompressed: Implicit VR Little Endian; Explicit VR Little/Big Endian
-  - ✅ JPEG (baseline) and JPEG 2000 via platform codecs where available
+  - Uncompressed: Implicit VR Little Endian; Explicit VR Little/Big Endian.
+  - JPEG (baseline) and JPEG 2000 via platform codecs where available.
   - JPEG-LS (lossless/near-lossless): Experimental NEAR=0 grayscale decoder (enabled by default; set `DCMSWIFT_DISABLE_JPEGLS=1` to opt out).
   - RLE Lossless: Implemented for Mono8, Mono16, RGB8.
-  - ⚠️ Not yet: Deflate (custom codec required)
+  - Not yet available: Deflate (custom codec required).
 
 - Image types
-  - ✅ Grayscale (8/12/16-bit), MONOCHROME1/MONOCHROME2
-  - ✅ RGB/ARGB
-  - ✅ Multi-frame
+  - Grayscale (8/12/16-bit), MONOCHROME1/MONOCHROME2.
+  - RGB/ARGB.
+  - Multi-frame.
 
 - Network protocols
-  - ✅ Core DIMSE services: C-ECHO, C-FIND, C-STORE, C-GET, C-MOVE
-  - ✅ DICOMweb: WADO-RS, QIDO-RS, STOW-RS
+  - Core DIMSE services: C-ECHO, C-FIND, C-STORE, C-GET, C-MOVE.
+  - DICOMweb: WADO-RS, QIDO-RS, STOW-RS.
 
 ### Known Limitations
 
@@ -128,55 +128,55 @@ The primary APIs are grouped by area. Each snippet shows the typical entry point
 ### Files and Datasets
 
 - DicomFile
-  - Load: `let file = DicomFile(forPath: "/path/image.dcm")` — Opens and parses a DICOM file into a `DataSet`.
-  - Write: `_ = file?.write(atPath: "/tmp/out.dcm")` — Writes the current dataset back to disk.
-  - Validate: `let issues = file?.validate()` — Runs basic checks and returns validation issues.
-  - SR/PDF: `file?.structuredReportDocument`, `file?.pdfData()` — Access SR document or extract an encapsulated PDF.
+  - Load: `let file = DicomFile(forPath: "/path/image.dcm")` - Opens and parses a DICOM file into a `DataSet`.
+  - Write: `_ = file?.write(atPath: "/tmp/out.dcm")` - Writes the current dataset back to disk.
+  - Validate: `let issues = file?.validate()` - Runs basic checks and returns validation issues.
+  - SR/PDF: `file?.structuredReportDocument`, `file?.pdfData()` - Access SR document or extract an encapsulated PDF.
 
 - DataSet
-  - Read: `dataset.string(forTag: "PatientName")` — Gets a string value for a tag.
-  - Write: `_ = dataset.set(value: "John^Doe", forTagName: "PatientName")` — Sets or creates an element value.
-  - Sequences: `dataset.add(element: DataSequence(withTag: tag, parent: nil))` — Adds a sequence element.
+  - Read: `dataset.string(forTag: "PatientName")` - Gets a string value for a tag.
+  - Write: `_ = dataset.set(value: "John^Doe", forTagName: "PatientName")` - Sets or creates an element value.
+  - Sequences: `dataset.add(element: DataSequence(withTag: tag, parent: nil))` - Adds a sequence element.
 
 - Streams
-  - Input: `DicomInputStream(filePath:)` → `readDataset(headerOnly:withoutPixelData:)` — Reads a dataset from a stream with options.
-  - Output: `DicomOutputStream(filePath:)` → `write(dataset:vrMethod:byteOrder:)` — Writes a dataset to an output stream.
-  - Optional memory mapping: `export DCMSWIFT_MAP_IF_SAFE=1` — Enables mapped file reads when safe.
+  - Input: `DicomInputStream(filePath:)` -> `readDataset(headerOnly:withoutPixelData:)` - Reads a dataset from a stream with options.
+  - Output: `DicomOutputStream(filePath:)` -> `write(dataset:vrMethod:byteOrder:)` - Writes a dataset to an output stream.
+  - Optional memory mapping: `export DCMSWIFT_MAP_IF_SAFE=1` - Enables mapped file reads when safe.
 
 - DICOMDIR
-  - `DicomDir(forPath:)` → `patients`, `index`, `index(forPatientID:)` — Lists indexed patients and files.
+  - `DicomDir(forPath:)` -> `patients`, `index`, `index(forPatientID:)` - Lists indexed patients and files.
 
 ### Graphics and Window/Level
 
 - DicomImage
-  - From dataset: `let img = file?.dicomImage` — Creates an image helper from a dataset.
-  - Stream frames: `img?.streamFrames { data in ... }` — Iterates frames without retaining them.
+  - From dataset: `let img = file?.dicomImage` - Creates an image helper from a dataset.
+  - Stream frames: `img?.streamFrames { data in ... }` - Iterates frames without retaining them.
 
 - DicomPixelView (UIKit platforms)
-  - 8‑bit: `setPixels8(_:width:height:windowWidth:windowCenter:)` — Sets 8‑bit pixels and applies window/level.
-  - 16‑bit: `setPixels16(_:width:height:windowWidth:windowCenter:)` — Sets 16‑bit pixels with W/L mapping.
-  - RGB: `setPixelsRGB(_:width:height:bgr:)` — Sets RGB data (optionally BGR) for color images.
-  - Adjust W/L: `setWindow(center:width:)` — Updates window/level and redraws using cached pixels.
-  - Disable Metal: `export DCMSWIFT_DISABLE_METAL=1` — Forces CPU rendering path.
+  - 8-bit: `setPixels8(_:width:height:windowWidth:windowCenter:)` - Sets 8-bit pixels and applies window/level.
+  - 16-bit: `setPixels16(_:width:height:windowWidth:windowCenter:)` - Sets 16-bit pixels with W/L mapping.
+  - RGB: `setPixelsRGB(_:width:height:bgr:)` - Sets RGB data (optionally BGR) for color images.
+  - Adjust W/L: `setWindow(center:width:)` - Updates window/level and redraws using cached pixels.
+  - Disable Metal: `export DCMSWIFT_DISABLE_METAL=1` - Forces CPU rendering path.
 
 - WindowLevelCalculator
-  - Defaults by modality: `defaultWindowLevel(for:)` — Returns recommended W/L for a modality.
-  - Conversions: `convertPixelToHU`, `convertHUToPixel` — Converts between stored pixel and HU.
-  - Compute pixel W/L: `calculateWindowLevel(context:)` — Computes W/L in pixel space given context.
+  - Defaults by modality: `defaultWindowLevel(for:)` - Returns recommended W/L for a modality.
+  - Conversions: `convertPixelToHU`, `convertHUToPixel` - Converts between stored pixel and HU.
+  - Compute pixel W/L: `calculateWindowLevel(context:)` - Computes W/L in pixel space given context.
 
 ### DIMSE Networking
 
 - DicomClient
-  - Echo: `try client.echo()` — Tests connectivity with a C‑ECHO.
-  - Find: `try client.find(queryDataset:queryLevel:instanceUID:)` — Queries a remote SCP (C‑FIND).
-  - Store: `try client.store(filePaths:)` — Sends files to a remote SCP (C‑STORE).
-  - Get: `try client.get(queryDataset:queryLevel:instanceUID:)` — Retrieves objects via same association (C‑GET).
-  - Move: `try client.move(queryDataset:queryLevel:instanceUID:destinationAET:startTemporaryServer:)` — Requests remote send to an AE (C‑MOVE).
+  - Echo: `try client.echo()` - Tests connectivity with a C-ECHO.
+  - Find: `try client.find(queryDataset:queryLevel:instanceUID:)` - Queries a remote SCP (C-FIND).
+  - Store: `try client.store(filePaths:)` - Sends files to a remote SCP (C-STORE).
+  - Get: `try client.get(queryDataset:queryLevel:instanceUID:)` - Retrieves objects via same association (C-GET).
+  - Move: `try client.move(queryDataset:queryLevel:instanceUID:destinationAET:startTemporaryServer:)` - Requests remote send to an AE (C-MOVE).
 
 - Notes
-  - C‑FIND packs command + dataset in a single P‑DATA‑TF when possible
-  - C‑GET reassembles multi‑fragment PDUs; returns `[DicomFile]`
-  - C‑MOVE supports an optional temporary C‑STORE SCP for local reception
+  - C-FIND packs command + dataset in a single P-DATA-TF when possible
+  - C-GET reassembles multi-fragment PDUs; returns `[DicomFile]`
+  - C-MOVE supports an optional temporary C-STORE SCP for local reception
 
 - Advanced services
   - SCUs: `CFindSCU`, `CGetSCU`, `CMoveSCU`
@@ -184,30 +184,30 @@ The primary APIs are grouped by area. Each snippet shows the typical entry point
 
 ### DICOMweb
 
-- Facade: `let web = try DICOMweb(urlString: "https://server/dicom-web")` — Creates a DICOMweb client facade.
-  - WADO‑RS: `try await web.wado.retrieveStudy(...)` — Downloads all instances in a study.
-  - QIDO‑RS: `try await web.qido.searchForStudies(...)` — Searches studies with DICOM JSON results.
-  - STOW‑RS: `try await web.stow.storeFiles([...])` — Uploads DICOM instances to a study.
+- Facade: `let web = try DICOMweb(urlString: "https://server/dicom-web")` - Creates a DICOMweb client facade.
+  - WADO-RS: `try await web.wado.retrieveStudy(...)` - Downloads all instances in a study.
+  - QIDO-RS: `try await web.qido.searchForStudies(...)` - Searches studies with DICOM JSON results.
+  - STOW-RS: `try await web.stow.storeFiles([...])` - Uploads DICOM instances to a study.
 
 ### Tools and Utilities
 
 - DicomTool (UIKit platforms)
-  - Display: `await DicomTool.shared.decodeAndDisplay(path:view:)` — Decodes and shows an image in `DicomPixelView`.
-  - Validate: `await DicomTool.shared.isValidDICOM(at:)` — Quickly checks if a file is parseable DICOM.
-  - UIDs: `await DicomTool.shared.extractDICOMUIDs(from:)` — Returns study/series/instance UIDs.
+  - Display: `await DicomTool.shared.decodeAndDisplay(path:view:)` - Decodes and shows an image in `DicomPixelView`.
+  - Validate: `await DicomTool.shared.isValidDICOM(at:)` - Quickly checks if a file is parseable DICOM.
+  - UIDs: `await DicomTool.shared.extractDICOMUIDs(from:)` - Returns study/series/instance UIDs.
 
 ## Architecture
 
 ### Module Organization
 
-- **Foundation** — Core DICOM types, tags, VRs, transfer syntax handling
-- **IO** — Stream-based reading/writing with `DicomInputStream`/`DicomOutputStream`
-- **Data** — `DataSet`, element types, sequences, DICOMDIR, structured reports
-- **Graphics** — GPU-accelerated rendering with `DicomImage`, `DicomPixelView`, window/level
-- **Networking** — DIMSE protocol implementation with all service classes
-- **Web** — Async DICOMweb client (WADO-RS, QIDO-RS, STOW-RS)
-- **Tools** — ROI measurements, anonymization, utilities
-- **Executables** — Command-line tools for all DICOM operations
+- **Foundation** - Core DICOM types, tags, VRs, transfer syntax handling
+- **IO** - Stream-based reading/writing with `DicomInputStream`/`DicomOutputStream`
+- **Data** - `DataSet`, element types, sequences, DICOMDIR, structured reports
+- **Graphics** - GPU-accelerated rendering with `DicomImage`, `DicomPixelView`, window/level
+- **Networking** - DIMSE protocol implementation with all service classes
+- **Web** - Async DICOMweb client (WADO-RS, QIDO-RS, STOW-RS)
+- **Tools** - ROI measurements, anonymization, utilities
+- **Executables** - Command-line tools for all DICOM operations
 
 ### Performance Architecture
 
@@ -237,23 +237,23 @@ The library achieves excellent performance through its multi-tier optimization s
 
 | Operation | Performance | Notes |
 |-----------|------------|-------|
-| **Window/Level (Metal)** | ~2ms for 512×512 | GPU-accelerated with VOI LUT support |
-| **Window/Level (CPU)** | ~8ms for 512×512 | vDSP vectorized with fallback |
-| **JPEG Decode** | ~15ms for 512×512 | Native decompression |
+| **Window/Level (Metal)** | ~2ms for 512x512 | GPU-accelerated with VOI LUT support |
+| **Window/Level (CPU)** | ~8ms for 512x512 | vDSP vectorized with fallback |
+| **JPEG Decode** | ~15ms for 512x512 | Native decompression |
 | **C-FIND Query** | ~50ms | With PDU optimization and packing fixes |
 | **C-GET Transfer** | ~1.2s/MB | Network dependent with improved reassembly |
 | **Pixel Buffer Cache** | <1ms | Direct memory access with byte-based limits |
 | **Memory-Mapped I/O** | ~1-3ms savings | Zero-copy frame access for large series |
-| **Adaptive Prefetch** | ±2 to ±16 frames | Dynamic based on scroll velocity |
+| **Adaptive Prefetch** | +/-2 to +/-16 frames | Dynamic based on scroll velocity |
 
 ### Memory Usage
 
 - **Streaming Mode**: Constant memory regardless of file size
-- **Cached Mode**: ~4MB per 512×512 16-bit image with configurable limits
+- **Cached Mode**: ~4MB per 512x512 16-bit image with configurable limits
 - **Metal Buffers**: Reused across frames to minimize allocation
 - **Automatic Eviction**: NSCache-based management with byte-based cost calculation
 - **Memory-Mapped I/O**: Optional zero-copy access for large multiframe files
-- **Adaptive Prefetch**: Ring buffer with velocity-based distance (±2 to ±16 frames)
+- **Adaptive Prefetch**: Ring buffer with velocity-based distance (+/-2 to +/-16 frames)
 
 ## ROI Measurement Service
 
@@ -624,24 +624,4 @@ Both `DCMTK` and `dcm4chee` tools are useful references for testing DICOM featur
 
 ## License
 
-MIT License
-
-Copyright (c) 2019 - OPALE, https://www.opale.fr
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+DcmSwift is distributed under the MIT License. See the `LICENSE` file for the full text.

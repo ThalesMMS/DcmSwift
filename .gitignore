@@ -1,14 +1,29 @@
+# macOS
 .DS_Store
-/.build
-/Packages
-/*.xcodeproj
-xcuserdata/
-docs/
-Tests/DcmSwiftTests/Resources/
 __MACOSX/
+
+# Swift Package Manager
+/.build/
+/.swiftpm/
+/Packages
+Package.pins
+
+# Xcode
+/*.xcodeproj
+/*.xcworkspace
+xcuserdata/
+DerivedData/
+
+# Build outputs
 /build
+
+# Documentation drafts
+docs/
+COMPRESSION_SUPPORT_SUMMARY.md
 CLAUDE.md
 AGENTS.md
 GEMINI.md
-COMPRESSION_SUPPORT_SUMMARY.md
+
+# Test artifacts
+Tests/DcmSwiftTests/Resources/
 /Tests/DICOM_Test

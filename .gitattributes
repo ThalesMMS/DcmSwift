@@ -1,0 +1,32 @@
+# Use LF line endings and auto text normalization by default
+* text=auto eol=lf
+
+# Source files
+*.swift text
+*.h text
+*.hpp text
+*.c text
+*.cc text
+*.cpp text
+*.cxx text
+*.m text
+*.mm text
+*.metal text
+*.sh text
+*.py text
+*.md text
+*.yml text
+*.yaml text
+*.json text
+*.txt text
+
+# Binary assets
+*.air binary
+*.dcm binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.tif binary
+*.tiff binary
+*.zip binary
