@@ -261,28 +261,6 @@ The library achieves excellent performance through its multi-tier optimization s
 
 ## Integration
 
-### Swift Package Manager
-
-Add DcmSwift to your `Package.swift` using either a local path (same workspace) or your fork URL:
-
-```swift
-// Option A: local path
-dependencies: [
-    .package(path: "../DcmSwift")
-]
-
-// Option B: your fork URL
-dependencies: [
-    .package(url: "https://github.com/your-org/DcmSwift.git", from: "0.1.0")
-]
-
-// In your target
-.target(
-    name: "YourTarget",
-    dependencies: ["DcmSwift"]
-)
-```
-
 ### Import in Code
 
 ```swift
